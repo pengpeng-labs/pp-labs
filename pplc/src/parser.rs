@@ -1,0 +1,505 @@
+//! 递归下降解析器：token 序列 → AST。
+
+use crate::ast::*;
+use crate::lexer::{Token, TokenKind};
+
+pub struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl Parser {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Parser { tokens, pos: 0 }
+    }
+
+    fn peek(&self) -> &TokenKind {
+        &self.tokens[self.pos].kind
+    }
+
+    fn advance(&mut self) -> Token {
+        let t = self.tokens[self.pos].clone();
+        if self.pos + 1 < self.tokens.len() {
+            self.pos += 1;
+        }
+        t
+    }
+
+    fn eat(&mut self, kind: &TokenKind) -> bool {
+        if self.peek() == kind {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, kind: &TokenKind, what: &str) -> Result<Token, String> {
+        if self.peek() == kind {
+            Ok(self.advance())
+        } else {
+            let t = &self.tokens[self.pos];
+            Err(format!(
+                "expected {} at {}:{}, got {:?}",
+                what, t.line, t.col, t.kind
+            ))
+        }
+    }
+
+    fn expect_ident(&mut self, what: &str) -> Result<String, String> {
+        let t = self.advance();
+        match t.kind {
+            TokenKind::Ident(s) => Ok(s),
+            _ => Err(format!(
+                "expected {} at {}:{}, got {:?}",
+                what, t.line, t.col, t.kind
+            )),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 顶层
+    // ---------------------------------------------------------------
+
+    pub fn parse_program(&mut self) -> Result<Vec<Item>, String> {
+        let mut items = Vec::new();
+        while *self.peek() != TokenKind::Eof {
+            if self.eat(&TokenKind::Extern) {
+                let proto = self.parse_prototype()?;
+                self.expect(&TokenKind::Semicolon, "';' after extern")?;
+                items.push(Item::Extern(proto));
+            } else if self.eat(&TokenKind::Struct) {
+                items.push(Item::Struct(self.parse_struct_def()?));
+            } else if self.eat(&TokenKind::Import) {
+                let t = self.advance();
+                let path = match t.kind {
+                    TokenKind::Str(s) => s,
+                    _ => return Err(format!("expected string after import at {}:{}", t.line, t.col)),
+                };
+                self.expect(&TokenKind::Semicolon, "';' after import")?;
+                items.push(Item::Import(path));
+            } else if self.eat(&TokenKind::Static) {
+                let name = self.expect_ident("static name")?;
+                self.expect(&TokenKind::Colon, "':'")?;
+                let ty = self.parse_type()?;
+                let init = if self.eat(&TokenKind::Assign) {
+                    let e = self.parse_expr()?;
+                    Some(e)
+                } else {
+                    None
+                };
+                self.expect(&TokenKind::Semicolon, "';' after static")?;
+                items.push(Item::Static(Static { name, ty, init }));
+            } else {
+                let proto = self.parse_prototype()?;
+                let body = self.parse_block()?;
+                items.push(Item::Function(Function { proto, body }));
+            }
+        }
+        Ok(items)
+    }
+
+    fn parse_struct_def(&mut self) -> Result<StructDef, String> {
+        let name = self.expect_ident("struct name")?;
+        self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut fields = Vec::new();
+        while !self.eat(&TokenKind::RBrace) {
+            let fname = self.expect_ident("field name")?;
+            self.expect(&TokenKind::Colon, "':'")?;
+            let ftype = self.parse_type()?;
+            fields.push((fname, ftype));
+            if self.eat(&TokenKind::Comma) {
+                continue;
+            }
+            self.expect(&TokenKind::RBrace, "'}'")?;
+            break;
+        }
+        Ok(StructDef { name, fields })
+    }
+
+    fn parse_prototype(&mut self) -> Result<Prototype, String> {
+        self.expect(&TokenKind::Fn, "'fn'")?;
+        let name = self.expect_ident("function name")?;
+        self.expect(&TokenKind::LParen, "'('")?;
+        let mut params = Vec::new();
+        if !self.eat(&TokenKind::RParen) {
+            loop {
+                let pname = self.expect_ident("parameter name")?;
+                self.expect(&TokenKind::Colon, "':'")?;
+                let ptype = self.parse_type()?;
+                params.push((pname, ptype));
+                if self.eat(&TokenKind::Comma) {
+                    continue;
+                }
+                self.expect(&TokenKind::RParen, "')'")?;
+                break;
+            }
+        }
+        let ret = if self.eat(&TokenKind::Arrow) {
+            self.parse_type()?
+        } else {
+            Type::Void
+        };
+        Ok(Prototype {
+            name,
+            params,
+            ret,
+        })
+    }
+
+    fn parse_type(&mut self) -> Result<Type, String> {
+        if self.eat(&TokenKind::Star) {
+            let inner = self.parse_type()?;
+            return Ok(Type::Ptr(Box::new(inner)));
+        }
+        if self.eat(&TokenKind::LBracket) {
+            let elem = self.parse_type()?;
+            self.expect(&TokenKind::Semicolon, "';' in array type")?;
+            let t = self.advance();
+            let len = match t.kind {
+                TokenKind::Int(v) if v >= 0 => v as usize,
+                _ => return Err(format!("expected array length at {}:{}", t.line, t.col)),
+            };
+            self.expect(&TokenKind::RBracket, "']'")?;
+            return Ok(Type::Array(Box::new(elem), len));
+        }
+        let t = self.advance();
+        match t.kind {
+            TokenKind::Ident(s) => match s.as_str() {
+                "int" => Ok(Type::Int),
+                "float" => Ok(Type::Float),
+                "bool" => Ok(Type::Bool),
+                "str" => Ok(Type::Str),
+                "u8" => Ok(Type::U8),
+                "u16" => Ok(Type::U16),
+                "u32" => Ok(Type::U32),
+                "u64" => Ok(Type::U64),
+                "void" => Ok(Type::Void),
+                _ => Ok(Type::Named(s)),
+            },
+            _ => Err(format!(
+                "expected type at {}:{}, got {:?}",
+                t.line, t.col, t.kind
+            )),
+        }
+    }
+
+    fn parse_block(&mut self) -> Result<Block, String> {
+        self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut stmts = Vec::new();
+        while *self.peek() != TokenKind::RBrace && *self.peek() != TokenKind::Eof {
+            stmts.push(self.parse_stmt()?);
+        }
+        self.expect(&TokenKind::RBrace, "'}'")?;
+        Ok(Block { stmts })
+    }
+
+    // ---------------------------------------------------------------
+    // 语句
+    // ---------------------------------------------------------------
+
+    fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        match self.peek() {
+            TokenKind::Return => {
+                self.advance();
+                let expr = if self.eat(&TokenKind::Semicolon) {
+                    None
+                } else {
+                    let e = self.parse_expr()?;
+                    self.expect(&TokenKind::Semicolon, "';' after return")?;
+                    Some(e)
+                };
+                Ok(Stmt::Return(expr))
+            }
+            TokenKind::Let => {
+                self.advance();
+                let name = self.expect_ident("variable name")?;
+                let ty = if self.eat(&TokenKind::Colon) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                let init = if self.eat(&TokenKind::Assign) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                self.expect(&TokenKind::Semicolon, "';' after let")?;
+                Ok(Stmt::Let { name, ty, init })
+            }
+            TokenKind::While => {
+                self.advance();
+                self.expect(&TokenKind::LParen, "'(' after while")?;
+                let cond = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "')' after condition")?;
+                let body = self.parse_block()?;
+                Ok(Stmt::While { cond, body })
+            }
+            TokenKind::Break => {
+                self.advance();
+                self.expect(&TokenKind::Semicolon, "';' after break")?;
+                Ok(Stmt::Break)
+            }
+            TokenKind::Continue => {
+                self.advance();
+                self.expect(&TokenKind::Semicolon, "';' after continue")?;
+                Ok(Stmt::Continue)
+            }
+            TokenKind::If => {
+                self.advance();
+                self.expect(&TokenKind::LParen, "'(' after if")?;
+                let cond = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "')' after condition")?;
+                let then = self.parse_block()?;
+                let els = if self.eat(&TokenKind::Else) {
+                    if matches!(self.peek(), TokenKind::If) {
+                        // else if：把嵌套的 if 语句包成块
+                        let nested = self.parse_stmt()?;
+                        Some(Block {
+                            stmts: vec![nested],
+                        })
+                    } else {
+                        Some(self.parse_block()?)
+                    }
+                } else {
+                    None
+                };
+                Ok(Stmt::If { cond, then, els })
+            }
+            TokenKind::Star => {
+                let lhs = self.parse_unary()?;
+                self.expect(&TokenKind::Assign, "'=' in deref assignment")?;
+                let value = self.parse_expr()?;
+                self.expect(&TokenKind::Semicolon, "';' after assignment")?;
+                Ok(Stmt::AssignIndex { lhs, value })
+            }
+            TokenKind::Ident(_) => {
+                // 赋值语句：ident = expr ;
+                if matches!(self.peek_next(), TokenKind::Assign) {
+                    let name = self.expect_ident("variable name")?;
+                    self.advance(); // '='
+                    let value = self.parse_expr()?;
+                    self.expect(&TokenKind::Semicolon, "';' after assignment")?;
+                    return Ok(Stmt::Assign { name, value });
+                }
+                // 下标赋值：ident[...] = expr ;
+                if matches!(self.peek_next(), TokenKind::LBracket) {
+                    let lhs = self.parse_postfix()?;
+                    self.expect(&TokenKind::Assign, "'=' in index assignment")?;
+                    let value = self.parse_expr()?;
+                    self.expect(&TokenKind::Semicolon, "';' after assignment")?;
+                    return Ok(Stmt::AssignIndex { lhs, value });
+                }
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::Semicolon, "';' after expression")?;
+                Ok(Stmt::Expr(e))
+            }
+            _ => {
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::Semicolon, "';' after expression")?;
+                Ok(Stmt::Expr(e))
+            }
+        }
+    }
+
+    fn peek_next(&self) -> &TokenKind {
+        let i = (self.pos + 1).min(self.tokens.len() - 1);
+        &self.tokens[i].kind
+    }
+
+    // ---------------------------------------------------------------
+    // 表达式（优先级爬升）
+    // ---------------------------------------------------------------
+
+    fn parse_expr(&mut self) -> Result<Expr, String> {
+        self.parse_binary(0)
+    }
+
+    fn binop_precedence(kind: &TokenKind) -> Option<u8> {
+        let p = match kind {
+            TokenKind::PipePipe => 1,
+            TokenKind::AmpAmp => 2,
+            TokenKind::Pipe => 3,
+            TokenKind::Caret => 4,
+            TokenKind::Amp => 5,
+            TokenKind::EqEq | TokenKind::NotEq | TokenKind::Lt | TokenKind::Gt | TokenKind::Le
+            | TokenKind::Ge => 6,
+            TokenKind::Shl | TokenKind::Shr => 7,
+            TokenKind::Plus | TokenKind::Minus => 8,
+            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => 9,
+            _ => return None,
+        };
+        Some(p)
+    }
+
+    fn binop_from(kind: &TokenKind) -> BinOp {
+        match kind {
+            TokenKind::Plus => BinOp::Add,
+            TokenKind::Minus => BinOp::Sub,
+            TokenKind::Star => BinOp::Mul,
+            TokenKind::Slash => BinOp::Div,
+            TokenKind::Percent => BinOp::Mod,
+            TokenKind::EqEq => BinOp::Eq,
+            TokenKind::NotEq => BinOp::Ne,
+            TokenKind::Lt => BinOp::Lt,
+            TokenKind::Gt => BinOp::Gt,
+            TokenKind::Le => BinOp::Le,
+            TokenKind::Ge => BinOp::Ge,
+            TokenKind::AmpAmp => BinOp::And,
+            TokenKind::PipePipe => BinOp::Or,
+            TokenKind::Amp => BinOp::BitAnd,
+            TokenKind::Pipe => BinOp::BitOr,
+            TokenKind::Caret => BinOp::BitXor,
+            TokenKind::Shl => BinOp::Shl,
+            TokenKind::Shr => BinOp::Shr,
+            _ => unreachable!(),
+        }
+    }
+
+    fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, String> {
+        let mut lhs = self.parse_unary()?;
+        loop {
+            let prec = match Self::binop_precedence(self.peek()) {
+                Some(p) if p >= min_prec => p,
+                _ => break,
+            };
+            let op = Self::binop_from(self.peek());
+            self.advance();
+            let rhs = self.parse_binary(prec + 1)?;
+            lhs = Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, String> {
+        match self.peek() {
+            TokenKind::Minus => {
+                self.advance();
+                let e = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: UnOp::Neg,
+                    expr: Box::new(e),
+                })
+            }
+            TokenKind::Bang => {
+                self.advance();
+                let e = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: UnOp::Not,
+                    expr: Box::new(e),
+                })
+            }
+            TokenKind::Amp => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                Ok(Expr::AddrOf(Box::new(inner)))
+            }
+            TokenKind::Star => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                Ok(Expr::Deref(Box::new(inner)))
+            }
+            TokenKind::Tilde => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                Ok(Expr::Unary {
+                    op: UnOp::BitNot,
+                    expr: Box::new(inner),
+                })
+            }
+            _ => self.parse_postfix(),
+        }
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_primary()?;
+        loop {
+            if self.eat(&TokenKind::Dot) {
+                let field = self.expect_ident("field name")?;
+                expr = Expr::Field {
+                    base: Box::new(expr),
+                    field,
+                };
+            } else if self.eat(&TokenKind::LBracket) {
+                let idx = self.parse_expr()?;
+                self.expect(&TokenKind::RBracket, "']'")?;
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    index: Box::new(idx),
+                };
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr, String> {
+        match self.peek().clone() {
+            TokenKind::Int(v) => {
+                self.advance();
+                Ok(Expr::Int(v))
+            }
+            TokenKind::Float(v) => {
+                self.advance();
+                Ok(Expr::Float(v))
+            }
+            TokenKind::Str(s) => {
+                self.advance();
+                Ok(Expr::Str(s))
+            }
+            TokenKind::Ident(name) => {
+                self.advance();
+                if self.eat(&TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    if !self.eat(&TokenKind::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.eat(&TokenKind::Comma) {
+                                continue;
+                            }
+                            self.expect(&TokenKind::RParen, "')'")?;
+                            break;
+                        }
+                    }
+                    Ok(Expr::Call { callee: name, args })
+                } else if self.eat(&TokenKind::LBrace) {
+                    let mut fields = Vec::new();
+                    if !self.eat(&TokenKind::RBrace) {
+                        loop {
+                            let fname = self.expect_ident("field name")?;
+                            self.expect(&TokenKind::Colon, "':'")?;
+                            let fexpr = self.parse_expr()?;
+                            fields.push((fname, fexpr));
+                            if self.eat(&TokenKind::Comma) {
+                                continue;
+                            }
+                            self.expect(&TokenKind::RBrace, "'}'")?;
+                            break;
+                        }
+                    }
+                    Ok(Expr::StructInit { name, fields })
+                } else {
+                    Ok(Expr::Var(name))
+                }
+            }
+            TokenKind::LParen => {
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "')'")?;
+                Ok(e)
+            }
+            other => {
+                let t = &self.tokens[self.pos];
+                Err(format!(
+                    "unexpected token {:?} at {}:{}",
+                    other, t.line, t.col
+                ))
+            }
+        }
+    }
+}

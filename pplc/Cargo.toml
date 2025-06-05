@@ -1,0 +1,12 @@
+[package]
+name = "pp"
+version = "0.1.0"
+edition = "2021"
+description = "pp-lang compiler: .pp -> LLVM IR -> executable / freestanding ELF"
+
+[[bin]]
+name = "pp"
+path = "src/main.rs"
+
+[dependencies]
+inkwell = { version = "0.10", features = ["llvm18-1"] }

@@ -1,0 +1,7 @@
+# LLVM 构建与运行配置（macOS / Apple Silicon，Homebrew 安装 llvm@18）
+# 其他平台请按实际路径调整。
+[env]
+LLVM_SYS_181_PREFIX = "/opt/homebrew/opt/llvm@18"
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/opt/homebrew/opt/llvm@18/lib"]
