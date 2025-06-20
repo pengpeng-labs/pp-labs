@@ -1,0 +1,216 @@
+/* 内存文件系统：16 个文件，名 ≤32 字节；内容存共享 128KB 缓冲池（可变大小，总容量 131072B） */
+
+static fs_pool: [u8; 131072];
+static fs_off: [int; 16];      /* 文件内容在池中的偏移 */
+static fs_name: [[u8; 32]; 16];
+static fs_size: [int; 16];
+static fs_used: [int; 16];
+static fs_bump: int = 0;       /* 池分配游标（文件不收缩） */
+
+fn fs_init() {
+    let i: int = 0;
+    while (i < 16) {
+        fs_used[i] = 0;
+        i = i + 1;
+    }
+    fs_bump = 0;
+    /* 出厂默认配置：DeepSeek API key（可用 write key <key> 覆盖） */
+    let k: str = "sk-7777ed9e1e59443ab124f3852aa54745";
+    let ki: int = fs_create("key");
+    if (ki >= 0) {
+        fs_write(ki, k);
+    }
+    /* 测试脚本 */
+    let s: str = "# demo script\necho hello from script\nls\napp list\n";
+    let si: int = fs_create("demo.sh");
+    if (si >= 0) {
+        fs_write(si, s);
+    }
+}
+
+/* 比较第 idx 个文件名与 str */
+fn fs_name_eq(idx: int, s: str) -> int {
+    let j: int = 0;
+    while (j < 32) {
+        if (fs_name[idx][j] != s[j]) {
+            return 0;
+        }
+        if (fs_name[idx][j] == 0) {
+            return 1;
+        }
+        j = j + 1;
+    }
+    return 1;
+}
+
+fn fs_find(name: str) -> int {
+    let i: int = 0;
+    while (i < 16) {
+        if (fs_used[i] == 1) {
+            if (fs_name_eq(i, name) == 1) {
+                return i;
+            }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn fs_create(name: str) -> int {
+    if (fs_find(name) >= 0) {
+        return -1;
+    }
+    let i: int = 0;
+    while (i < 16) {
+        if (fs_used[i] == 0) {
+            if (fs_bump >= 131072) {
+                return -1;   /* 池满 */
+            }
+            let j: int = 0;
+            while (j < 32) {
+                fs_name[i][j] = name[j];
+                if (name[j] == 0) {
+                    j = 32;
+                } else {
+                    j = j + 1;
+                }
+            }
+            fs_off[i] = fs_bump;
+            fs_size[i] = 0;
+            fs_used[i] = 1;
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn fs_write(idx: int, data: str) {
+    let j: int = 0;
+    while (j < 256) {
+        if (fs_off[idx] + j >= 131072) {
+            fs_size[idx] = j;
+            return;
+        }
+        fs_pool[fs_off[idx] + j] = data[j];
+        if (data[j] == 0) {
+            fs_size[idx] = j;
+            if (fs_off[idx] + j > fs_bump) {
+                fs_bump = fs_off[idx] + j;
+            }
+            return;
+        }
+        j = j + 1;
+    }
+    fs_size[idx] = 256;
+    if (fs_off[idx] + 256 > fs_bump) {
+        fs_bump = fs_off[idx] + 256;
+    }
+}
+
+/* 二进制写入（显式长度，不受 0 字节截断） */
+fn fs_write_bin(idx: int, data: int, len: int) {
+    let j: int = 0;
+    while (j < len && fs_off[idx] + j < 131072) {
+        fs_pool[fs_off[idx] + j] = volatile_load8(data + j);
+        j = j + 1;
+    }
+    fs_size[idx] = j;
+    if (fs_off[idx] + j > fs_bump) {
+        fs_bump = fs_off[idx] + j;
+    }
+}
+
+/* 二进制写入（offset 偏移处，供拼接/分块写） */
+fn fs_write_bin_at(idx: int, data: int, len: int, off: int) {
+    let j: int = 0;
+    while (j < len && fs_off[idx] + off + j < 131072) {
+        fs_pool[fs_off[idx] + off + j] = volatile_load8(data + j);
+        j = j + 1;
+    }
+    if (off + j > fs_size[idx]) {
+        fs_size[idx] = off + j;
+    }
+    if (fs_off[idx] + off + j > fs_bump) {
+        fs_bump = fs_off[idx] + off + j;
+    }
+}
+
+fn fs_print(idx: int) {
+    let j: int = 0;
+    while (j < fs_size[idx]) {
+        serial_putc(fs_pool[fs_off[idx] + j]);
+        j = j + 1;
+    }
+    serial_putc(10);
+}
+
+/* 拷贝文件内容到 buf，返回长度 */
+fn fs_read(idx: int, buf: int) -> int {
+    let j: int = 0;
+    while (j < fs_size[idx]) {
+        volatile_store8(buf + j, fs_pool[fs_off[idx] + j]);
+        j = j + 1;
+    }
+    return j;
+}
+
+/* 读取文件指定区间（off 起，len 字节；越界截断），返回实际字节数 */
+fn fs_read_at(idx: int, buf: int, len: int, off: int) -> int {
+    let j: int = 0;
+    while (j < len && off + j < fs_size[idx]) {
+        volatile_store8(buf + j, fs_pool[fs_off[idx] + off + j]);
+        j = j + 1;
+    }
+    return j;
+}
+
+fn fs_list() {
+    let i: int = 0;
+    while (i < 16) {
+        if (fs_used[i] == 1) {
+            let j: int = 0;
+            while (fs_name[i][j] != 0) {
+                serial_putc(fs_name[i][j]);
+                j = j + 1;
+            }
+            serial_putc(32);
+        }
+        i = i + 1;
+    }
+    serial_putc(10);
+}
+
+/* 把 FS 文件列表拼成字符串写入 buf（逗号分隔），返回长度 */
+fn fs_list_str(buf: int) -> int {
+    let bi: int = 0;
+    let first: int = 1;
+    let i: int = 0;
+    while (i < 16) {
+        if (fs_used[i] == 1) {
+            if (first == 0) {
+                volatile_store8(buf + bi, 44);   /* ',' */
+                bi = bi + 1;
+            }
+            first = 0;
+            let j: int = 0;
+            while (fs_name[i][j] != 0) {
+                volatile_store8(buf + bi, fs_name[i][j]);
+                bi = bi + 1;
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    volatile_store8(buf + bi, 0);
+    return bi;
+}
+
+fn fs_remove(name: str) -> int {
+    let i: int = fs_find(name);
+    if (i < 0) {
+        return -1;
+    }
+    fs_used[i] = 0;
+    return 0;
+}
