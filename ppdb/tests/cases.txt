@@ -1,0 +1,53 @@
+# pp-db 宿主机 CLI 测试用例（D-3）
+# 每行一条命令，逐行执行（与管道批处理一致）。
+# 期望输出见 expected.txt（golden）。
+# 本文件聚焦：SQL 最小子集（CREATE/INSERT/SELECT WHERE）+ KV + Doc + save/load。
+
+# ---- SQL：建表（int/str 两列）----
+sql CREATE TABLE notes (id int, msg str)
+sql CREATE TABLE empty (a int)
+sql CREATE TABLE dup (a int)
+
+# ---- SQL：插入（数字 + 引号字符串）----
+sql INSERT INTO notes (id,msg) VALUES (1,'hello')
+sql INSERT INTO notes (id,msg) VALUES (2,'world')
+sql INSERT INTO notes (id,msg) VALUES (3,'pp-db')
+
+# ---- SQL：SELECT（全列 + WHERE 第 0 列）----
+sql SELECT id,msg FROM notes
+sql SELECT id,msg FROM notes WHERE id=2
+sql SELECT id,msg FROM notes WHERE id=99
+
+# ---- SQL：空表与错误路径 ----
+sql SELECT id FROM empty
+sql INSERT INTO ghost (id,msg) VALUES (1,'x')
+sql CREATE TABLE broken
+sql HELLO WORLD
+
+# ---- KV ----
+kv put theme dark
+kv get theme
+kv put theme light
+kv get theme
+kv get missing
+kv del theme
+kv get theme
+kv del theme
+
+# ---- Doc ----
+doc put s1 {"a":1}
+doc get s1
+doc put s1 {"a":2,"b":3}
+doc get s1
+doc get ghost
+doc put x [1,2,3]
+doc get x
+
+# ---- 持久化：save（load 由脚本第二步独立进程验证）----
+save test.db
+
+# ---- 元信息 ----
+tables
+help
+unknown_command_xyz
+quit

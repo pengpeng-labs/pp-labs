@@ -1,0 +1,42 @@
+pp-db CLI (independent database)
+table created
+table created
+table created
+1 row inserted
+1 row inserted
+1 row inserted
+c0 c1
+1 hello
+2 world
+3 pp-db
+(N rows)
+c0 c1
+2 world
+(N rows)
+c0 c1
+(N rows)
+c0
+(N rows)
+sql: no such table
+sql: only CREATE/INSERT/SELECT
+kv put ok
+kv: dark
+kv put ok
+kv: light
+kv: not found
+kv del ok
+kv: not found
+kv: not found
+doc put ok
+doc: {"a":1}
+doc put ok
+doc: {"a":2,"b":3}
+doc: not found
+doc put ok
+doc: [1,2,3]
+db saved (2060 bytes)
+notes
+empty
+dup
+pp-db CLI: sql <SQL> | kv get|put|del <k> [v] | doc get|put <name> [json] | save|load <file> | tables | quit
+unknown command (help for usage)
