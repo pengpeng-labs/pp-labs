@@ -14,7 +14,22 @@ static my_mac: [u8; 6];
 static my_ip: [u8; 4];
 static gateway_mac: [u8; 6];
 static dns_resolved: [u8; 4];
+static tcp_seq: int = 0;
+static tcp_ack: int = 0;
+static tcp_src: int = 12346;   /* TCP 源端口（每次连接递增，避免旧连接残留） */
+static tcp_state: int = 0;
 static http_len: int = 0;
+
+/* ---- TCP 重传（uIP 精华移植：RTO 定时器 + 指数退避 + 未确认跟踪）---- */
+static tcp_outstanding: int = 0;      /* 1 = 有待确认数据 */
+static tcp_retry_timer: int = 0;      /* 重传倒计时（PIT tick，100Hz） */
+static tcp_retry_n: int = 0;          /* 已重传次数 */
+static tcp_rexmit_len: int = 0;       /* 重传缓冲长度 */
+static tcp_rexmit_buf: [u8; 1024];    /* 重传数据副本（TLS 握手/请求） */
+static tcp_rexmit_dst: [u8; 4];       /* 对端 IP */
+static tcp_rexmit_port: int = 0;      /* 对端端口 */
+static tcp_rexmit_flags: int = 0;     /* 重传时的 flags */
+static tcp_peer_mss: int = 1460;      /* 对端 MSS（SYN-ACK 解析，默认 1460） */
 
 fn mmio_read(off: int) -> int {
     return volatile_load32(e1000_base + off);
@@ -350,6 +365,99 @@ fn load_be16(addr: int) -> int {
     return (volatile_load8(addr) << 8) | volatile_load8(addr + 1);
 }
 
+/* TCP 校验和（伪头部 + TCP 头 + payload，协议 6） */
+fn tcp_checksum(src_ip: int, dst_ip: int, tcp: int, tcp_len: int) -> int {
+    let ph: int = 0x640100;
+    let i: int = 0;
+    while (i < 4) {
+        volatile_store8(ph + i, volatile_load8(src_ip + i));
+        volatile_store8(ph + 4 + i, volatile_load8(dst_ip + i));
+        i = i + 1;
+    }
+    volatile_store8(ph + 8, 0);
+    volatile_store8(ph + 9, 6);
+    volatile_store8(ph + 10, (tcp_len >> 8) & 0xFF);
+    volatile_store8(ph + 11, tcp_len & 0xFF);
+    let sum: int = csum_add(0, ph, 12);
+    let s: int = csum_add(sum, tcp, tcp_len);
+    let r: int = s;
+    while (r > 0xFFFF) {
+        r = (r & 0xFFFF) + (r >> 16);
+    }
+    if (r == 0xFFFF) {
+        r = 0;
+    }
+    return (0xFFFF - r) & 0xFFFF;
+}
+
+/* 发送 TCP 段（flags: SYN=2 ACK=16 PSH=8 FIN=1） */
+fn tcp_send(dst_ip: int, dst_port: int, flags: int, seq: int, ack: int, payload: int, payload_len: int) {
+    let p: int = 0x620000;
+    let i: int = 0;
+    /* 以太网头 */
+    while (i < 6) {
+        volatile_store8(p + i, gateway_mac[i]);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 6) {
+        volatile_store8(p + 6 + i, my_mac[i]);
+        i = i + 1;
+    }
+    volatile_store8(p + 12, 0x08);
+    volatile_store8(p + 13, 0x00);
+    /* IPv4 头 */
+    volatile_store8(p + 14, 0x45);
+    volatile_store8(p + 15, 0x00);
+    let opt_len: int = 0;
+    if ((flags & 0x02) != 0) {
+        opt_len = 4;   /* SYN 带 MSS 选项 */
+    }
+    store_be16(p + 16, 20 + 20 + opt_len + payload_len);
+    store_be16(p + 18, 0x1235);    store_be16(p + 20, 0x0000);
+    volatile_store8(p + 22, 64);
+    volatile_store8(p + 23, 6);
+    store_be16(p + 24, 0);
+    volatile_store8(p + 26, 10);
+    volatile_store8(p + 27, 0);
+    volatile_store8(p + 28, 2);
+    volatile_store8(p + 29, 15);
+    i = 0;
+    while (i < 4) {
+        volatile_store8(p + 30 + i, volatile_load8(dst_ip + i));
+        i = i + 1;
+    }
+    store_be16(p + 24, ip_checksum(p + 14, 20));
+    /* TCP 头 */
+    store_be16(p + 34, tcp_src);
+    store_be16(p + 36, dst_port);
+    store_be32(p + 38, seq);
+    store_be32(p + 42, ack);
+    let tcp_hl: int = 20;
+    if ((flags & 0x02) != 0) {
+        /* SYN：带 MSS 选项（uIP 精华：协商最大段大小，防真机分片问题） */
+        volatile_store8(p + 46, 0x60);   /* data offset = 6 * 4 = 24B */
+        volatile_store8(p + 54, 2);      /* kind = MSS */
+        volatile_store8(p + 55, 4);      /* len = 4 */
+        store_be16(p + 56, 1460);
+        tcp_hl = 24;
+    } else {
+        volatile_store8(p + 46, 0x50);
+    }    volatile_store8(p + 47, flags);
+    store_be16(p + 48, 0x2000);
+    store_be16(p + 50, 0);
+    store_be16(p + 52, 0);
+    /* payload */
+    i = 0;
+    while (i < payload_len) {
+        volatile_store8(p + 54 + tcp_hl + i, volatile_load8(payload + i));
+        i = i + 1;
+    }
+    /* TCP 校验和 */
+    store_be16(p + 50, tcp_checksum(p + 26, p + 30, p + 34, tcp_hl + payload_len));
+    e1000_send(p, 54 + tcp_hl + payload_len);
+}
+
 /* IPv4 头校验和（RFC 1071） */
 fn ip_checksum(data: int, len: int) -> int {
     let sum: int = 0;
@@ -405,10 +513,11 @@ fn udp_checksum(src_ip: int, dst_ip: int, udp: int, udp_len: int) -> int {
     return (0xFFFF - s) & 0xFFFF;
 }
 
-/* 发送 UDP 包（dst_ip 指向 4 字节 IP，dst_port 端口）——DNS 用 */
+/* 发送 UDP 包（dst_ip 指向 4 字节 IP，dst_port 端口） */
 fn udp_send(dst_ip: int, dst_port: int, payload: int, payload_len: int) {
     let p: int = 0x620000;
     let i: int = 0;
+    /* 以太网头：目的=网关，源=我，ethertype=IPv4 */
     while (i < 6) {
         volatile_store8(p + i, gateway_mac[i]);
         i = i + 1;
@@ -420,6 +529,7 @@ fn udp_send(dst_ip: int, dst_port: int, payload: int, payload_len: int) {
     }
     volatile_store8(p + 12, 0x08);
     volatile_store8(p + 13, 0x00);
+    /* IPv4 头 */
     volatile_store8(p + 14, 0x45);
     volatile_store8(p + 15, 0x00);
     store_be16(p + 16, 20 + 8 + payload_len);
@@ -438,20 +548,24 @@ fn udp_send(dst_ip: int, dst_port: int, payload: int, payload_len: int) {
         i = i + 1;
     }
     store_be16(p + 24, ip_checksum(p + 14, 20));
+    /* UDP 头 */
     store_be16(p + 34, 12345);
     store_be16(p + 36, dst_port);
     let udp_len: int = 8 + payload_len;
     store_be16(p + 38, udp_len);
     store_be16(p + 40, 0);
+    /* payload */
     i = 0;
     while (i < payload_len) {
         volatile_store8(p + 42 + i, volatile_load8(payload + i));
         i = i + 1;
     }
+    /* UDP 校验和（伪头部 + UDP 头 + payload） */
     store_be16(p + 40, udp_checksum(p + 26, p + 30, p + 34, udp_len));
     e1000_send(p, 42 + payload_len);
 }
 
+/* DNS 查询：发 A 记录请求到 10.0.2.3:53 */
 fn dns_query(host: str) {
     let q: int = 0x630000;
     store_be16(q, 0x1234);
@@ -485,13 +599,13 @@ fn dns_query(host: str) {
     store_be16(q + j, 1);
     store_be16(q + j + 2, 1);
     let qlen: int = j + 4;
-    uip_glue_dns_send(q, qlen);
+    let dns_ip: [u8; 4];
+    dns_ip[0] = 10;
+    dns_ip[1] = 0;
+    dns_ip[2] = 2;
+    dns_ip[3] = 3;
+    udp_send(ptr_to_int(&dns_ip[0]), 53, q, qlen);
     serial_print("dns sent\n");
-}
-
-/* DNS 响应（uIP UDP 回调 → pp 解析） */
-fn pp_dns_recv(buf: u64, len: int) {
-    dns_parse(buf, len);
 }
 
 /* 解析 DNS 响应：遍历 answers 找 A 记录（TYPE=1），打印 IP */
@@ -541,21 +655,147 @@ fn dns_parse(d: int, len: int) {
             serial_putc(46);
             print_int(dns_resolved[3]);
             serial_putc(10);
+            return;
         }
-        i = i + 12 + rdlen;
+        i = i + 10 + rdlen;
     }
     serial_print("DNS: no A record\n");
 }
 
+/* 处理收到的 TCP 段 */
+fn tcp_parse(p: int, len: int) {
+    let flags: int = volatile_load8(p + 47);
+    let their_seq: int = load_be32(p + 38);
+    let their_ack: int = load_be32(p + 42);
+    let ip_len: int = load_be16(p + 16);
+    let payload_len: int = ip_len - 40;
+    if (payload_len < 0) {
+        payload_len = 0;
+    }
+    if ((flags & 0x02) != 0) {
+        if ((flags & 0x10) != 0 && tcp_state == 1) {
+            /* SYN-ACK */
+            tcp_ack = their_seq + 1;
+            tcp_seq = their_ack;
+            tcp_state = 2;
+            tls_rx_seq = their_seq + 1;   /* 期望第一个数据帧 seq */
+            /* 解析对端 MSS（uIP 精华）：TCP 头 20B 后扫选项 */
+            let doff: int = (volatile_load8(p + 46) >> 4) * 4;
+            tcp_peer_mss = 1460;
+            let o: int = 20;
+            while (o + 1 < doff) {
+                let kind: int = volatile_load8(p + 54 + o);
+                if (kind == 0) {
+                    break;   /* END */
+                }
+                if (kind == 1) {
+                    o = o + 1;   /* NOP */
+                    continue;
+                }
+                let olen: int = volatile_load8(p + 55 + o);
+                if (kind == 2 && olen == 4) {
+                    tcp_peer_mss = load_be16(p + 56 + o);
+                    o = doff;
+                    break;
+                }
+                if (olen < 2) {
+                    break;
+                }
+                o = o + olen;
+            }
+            serial_print("synack seq=");
+            print_int(their_seq);
+            serial_print(" mss=");
+            print_int(tcp_peer_mss);
+            serial_putc(10);
+        }
+    } else if ((flags & 0x10) != 0) {
+        /* ACK：数据段 */
+        if (payload_len > 0 && tcp_state == 2) {
+            let i: int = 0;
+            while (i < payload_len) {
+                if (http_len < 4096) {
+                    volatile_store8(0x650000 + http_len, volatile_load8(p + 54 + i));
+                    http_len = http_len + 1;
+                }
+                i = i + 1;
+            }
+            tcp_ack = their_seq + payload_len;
+            /* 立即回纯 ACK，否则对端（slirp）等待 ACK 不继续发数据 */
+            tcp_send_ack(p);
+        }
+    }
+}
+
+/* 发送纯 ACK（响应刚收到的 TCP 段；从包中取对端 IP/端口） */
+fn tcp_send_ack(p: int) {
+    let dst: int = 0x640100;
+    let i: int = 0;
+    while (i < 4) {
+        volatile_store8(dst + i, volatile_load8(p + 26 + i));
+        i = i + 1;
+    }
+    let dport: int = load_be16(p + 34);   /* 对端源端口（TCP 头偏移 34） */
+    serial_print("ack-> seq=");
+    print_int(tcp_seq);
+    serial_print(" ack=");
+    print_int(tcp_ack);
+    serial_putc(10);
+    tcp_send(dst, dport, 0x10, tcp_seq, tcp_ack, 0, 0);
+    serial_print("ack sent\n");
+}
+
+/* HTTP GET（最小客户端）：SYN → SYN-ACK → ACK+请求 → 收响应 */
 fn http_get(dst_ip: int, dst_port: int, path: str) {
-    /* 简化：HTTP/1.0 请求 → 复用 http_get_host（Host 头为空串） */
-    let rl: int = http_get_host(dst_ip, dst_port, int_to_ptr(0), path);
-    if (rl > 0) {
+    tcp_seq = 0x1000;
+    tcp_state = 1;
+    tcp_send(dst_ip, dst_port, 0x02, tcp_seq, 0, 0, 0);
+    serial_print("syn sent\n");
+    let t: int = 0;
+    while (t < 3000 && tcp_state == 1) {
+        net_poll();
+        t = t + 1;
+    }
+    if (tcp_state == 1) {
+        serial_print("no synack\n");
+        return;
+    }
+    /* 构建 HTTP 请求：GET <path> HTTP/1.0\r\n\r\n */
+    let req: int = 0x630100;
+    volatile_store8(req + 0, 71);
+    volatile_store8(req + 1, 69);
+    volatile_store8(req + 2, 84);
+    volatile_store8(req + 3, 32);
+    let plen: int = str_len(path);
+    let i: int = 0;
+    while (i < plen) {
+        volatile_store8(req + 4 + i, path[i]);
+        i = i + 1;
+    }
+    let tail: str = " HTTP/1.0\r\n\r\n";
+    i = 0;
+    while (tail[i] != 0) {
+        volatile_store8(req + 4 + plen + i, tail[i]);
+        i = i + 1;
+    }
+    let req_len: int = 4 + plen + i;
+    /* ACK + PSH + 请求数据 */
+    tcp_send(dst_ip, dst_port, 0x18, tcp_seq, tcp_ack, req, req_len);
+    tcp_seq = tcp_seq + req_len;
+    serial_print("http sent\n");
+    /* 收响应 */
+    http_len = 0;
+    let t2: int = 0;
+    while (t2 < 20000) {
+        net_poll();
+        t2 = t2 + 1;
+    }
+    if (http_len > 0) {
         serial_print("HTTP response (");
-        print_int(rl);
-        serial_print(" bytes)\n");
+        print_int(http_len);
+        serial_print(" bytes):\n");
         let j: int = 0;
-        while (j < rl && j < 600) {
+        while (j < http_len && j < 600) {
             serial_putc(volatile_load8(0x650000 + j));
             j = j + 1;
         }
@@ -567,25 +807,17 @@ fn http_get(dst_ip: int, dst_port: int, path: str) {
 
 /* HTTP GET（任意主机，HTTP/1.1 + Host 头）：响应存 0x650000，返回长度 */
 fn http_get_host(dst_ip: int, dst_port: int, host: str, path: str) -> int {
-    /* uIP 连接 + 发送 */
-    if (uip_glue_connect(dst_ip, dst_port) != 0) {
-        serial_print("uip connect fail\n");
-        return 0;
-    }
+    tcp_src = tcp_src + 1;
+    tcp_seq = 0x1000;
+    tcp_state = 1;
+    tcp_send(dst_ip, dst_port, 0x02, tcp_seq, 0, 0, 0);
     let t: int = 0;
-    while (t < 3000) {
-        uip_glue_poll();
-        if (uip_glue_connected() == 1) {
-            break;
-        }
-        if (uip_glue_closed() == 1) {
-            serial_print("no synack\n");
-            return 0;
-        }
+    while (t < 3000 && tcp_state == 1) {
+        net_poll();
         hlt();
         t = t + 1;
     }
-    if (uip_glue_connected() != 1) {
+    if (tcp_state == 1) {
         serial_print("no synack\n");
         return 0;
     }
@@ -627,17 +859,17 @@ fn http_get_host(dst_ip: int, dst_port: int, host: str, path: str) -> int {
         ri = ri + 1;
         i = i + 1;
     }
-    uip_glue_send(req, ri);
+    /* ACK + PSH + 请求数据 */
+    tcp_send(dst_ip, dst_port, 0x18, tcp_seq, tcp_ack, req, ri);
+    tcp_seq = tcp_seq + ri;
     serial_print("http sent\n");
-    /* 收响应：从 glue 缓冲读 */
+    /* 收响应：连续 idle 轮无新数据视为完整（响应可能分多段） */
     http_len = 0;
     let t2: int = 0;
     let idle: int = 0;
     while (t2 < 3000 && idle < 20) {
         let before: int = http_len;
-        uip_glue_poll();
-        let n: int = uip_glue_recv(0x650000 + http_len, 2048);
-        http_len = http_len + n;
+        net_poll();
         hlt();
         t2 = t2 + 1;
         if (http_len == before) {
@@ -645,108 +877,60 @@ fn http_get_host(dst_ip: int, dst_port: int, host: str, path: str) -> int {
         } else {
             idle = 0;
         }
-        if (uip_glue_closed() == 1 && n == 0) {
-            break;
-        }
     }
     return http_len;
 }
 
-/* ---- uIP glue 桥接（C 侧调用） ---- */
-
-/* e1000 收帧（glue 用）：dst 为 C 侧帧缓冲（u64 地址），返回帧长 */
-fn pp_e1000_recv(dst: u64) -> int {
-    return e1000_recv(dst);
-}
-
-/* e1000 发帧（glue 用） */
-fn pp_e1000_send(buf: u64, len: int) {
-    e1000_send(buf, len);
-}
-/* UDP 帧暂存（glue 拦截 DNS 响应 → pp 解析） */
-static udp_frame: [u8; 600];
-static udp_frame_len: int = 0;
-
-/* 网关 MAC 回填（glue ARP reply 调用） */
-fn pp_set_gateway_mac(mac: u64) {
-    let i: int = 0;
-    while (i < 6) {
-        gateway_mac[i] = volatile_load8(mac + i);
-        i = i + 1;
+/* 轮询接收，处理 ARP 回复 / IPv4 UDP 响应；返回 1 表示有事件 */
+fn net_poll() -> int {
+    let p: int = 0x610000;
+    let len: int = e1000_recv(p);
+    if (len <= 0) {
+        return 0;
     }
-}
-
-/* glue 调试打印 */
-fn pp_dbg(s: str) {
-    serial_print(s);
-}
-
-fn pp_dbg_int(v: int) {
-    serial_putc(91);
-    if (v == 1) {
-        serial_print("ARP");
-    } else if (v == 2) {
-        serial_print("IP");
-    } else {
-        serial_print("??");
-    }
-    serial_putc(93);
-    serial_putc(10);
-}
-
-/* glue 调试：打印 TCP SYN 帧关键字段 */
-fn pp_dbg_frame(p: u64, len: int) {
-    serial_print("TX len=");
+    serial_print("rx: len=");
     print_int(len);
-    serial_print(" eth=");
+    serial_print(" type=");
     print_byte_hex(volatile_load8(p + 12));
     print_byte_hex(volatile_load8(p + 13));
-    if (len > 34) {
-        serial_print(" ipdst=");
-        print_int(volatile_load8(p + 30));
-        serial_putc(46);
-        print_int(volatile_load8(p + 31));
-        serial_putc(46);
-        print_int(volatile_load8(p + 32));
-        serial_putc(46);
-        print_int(volatile_load8(p + 33));
-        serial_print(" sport=");
-        print_int((volatile_load8(p + 34) << 8) | volatile_load8(p + 35));
-        serial_print(" dport=");
-        print_int((volatile_load8(p + 36) << 8) | volatile_load8(p + 37));
-        serial_print(" flags=");
-        print_byte_hex(volatile_load8(p + 47));
-        serial_print(" tcpcs=");
-        print_byte_hex(volatile_load8(p + 50));
-        print_byte_hex(volatile_load8(p + 51));
-    }
     serial_putc(10);
-}
-
-fn pp_udp_frame(buf: u64, len: int) {
-    /* 回填网关 MAC（源 MAC 即网关）——手写 DNS UDP 发送需要 */
-    let i: int = 0;
-    while (i < 6) {
-        gateway_mac[i] = volatile_load8(buf + 6 + i);
-        i = i + 1;
+    if (volatile_load8(p + 12) == 0x08) {
+        if (volatile_load8(p + 13) == 0x06) {
+            if (volatile_load8(p + 21) == 0x02) {
+                /* ARP reply：存网关 MAC 并打印 */
+                let i: int = 0;
+                while (i < 6) {
+                    gateway_mac[i] = volatile_load8(p + 22 + i);
+                    i = i + 1;
+                }
+                serial_print("ARP reply: ");
+                i = 0;
+                while (i < 6) {
+                    if (i > 0) {
+                        serial_putc(58);
+                    }
+                    print_byte_hex(gateway_mac[i]);
+                    i = i + 1;
+                }
+                serial_putc(10);
+                return 1;
+            }
+        }
+        if (volatile_load8(p + 13) == 0x00) {
+            /* IPv4 */
+            if (volatile_load8(p + 23) == 17) {
+                /* UDP：DNS 响应 */
+                dns_parse(p + 42, len - 42);
+                return 1;
+            }
+            if (volatile_load8(p + 23) == 6) {
+                /* TCP：HTTP 响应 */
+                tcp_parse(p, len);
+                return 1;
+            }
+        }
     }
-    i = 0;
-    while (i < len && i < 600) {
-        udp_frame[i] = volatile_load8(buf + i);
-        i = i + 1;
-    }
-    udp_frame_len = i;
-    dns_parse(ptr_to_int(&udp_frame[42]), udp_frame_len - 42);
-}
-
-/* PIT tick（glue 时钟用，100Hz） */
-fn pp_ticks() -> int {
-    return tick_count_global();
-}
-
-/* 轮询网络（uIP 驱动 + DNS）：返回 1 有事件 */
-fn net_poll() -> int {
-    return uip_glue_poll();
+    return 0;
 }
 
 fn net_init() {
@@ -757,7 +941,6 @@ fn net_init() {
         my_ip[1] = 0;
         my_ip[2] = 2;
         my_ip[3] = 15;   /* QEMU 用户网络默认客户机 IP */
-        uip_glue_init();
         serial_print("e1000: ");
         let i: int = 0;
         while (i < 6) {
