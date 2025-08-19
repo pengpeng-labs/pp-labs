@@ -1,0 +1,27 @@
+# 构建产物
+*.o
+*.a
+*.elf
+*.bin
+*.img
+
+# 编译器
+pplc/target/
+pplc/*.o
+
+# OS
+ppos/kernel.elf
+ppos/kernel.elf64
+ppos/kernel.bin
+ppos/kernel.o
+ppos/boot/*.o
+ppos/boot/*.a
+
+# 数据库测试产物
+ppdb/test.db
+ppdb/tests/*.db
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
