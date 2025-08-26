@@ -24,6 +24,8 @@ extern void pp_udp_frame(uint8_t *buf, int len);   /* UDP 帧暂存（DNS） */
 /* ---- 本机配置（pp 侧设置） ---- */
 static uint8_t my_ip[4] = {10, 0, 2, 15};
 static uint8_t my_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+static uint8_t my_dr[4] = {10, 0, 2, 2};      /* 网关（slirp 默认路由器） */
+static uint8_t my_nm[4] = {255, 255, 255, 0}; /* 子网掩码 */
 
 /* ---- 接收字节流缓冲（uIP 数据到达 → 这里，pp 读走） ---- */
 #define RXBUF_CAP 16384
@@ -75,10 +77,19 @@ void uip_appcall(void)
             }
         }
     }
-    /* UIP_POLL（周期/可发送）：发出待发 TCP 数据 */
+    /* UIP_POLL（周期/可发送）：发出待发 TCP 数据。
+       uip_send 一次最多拷 MSS 字节到 uip_buf（TCP 下 uip_appdata 空间有限），
+       超过则分批：每轮 poll 发 ≤ MSS，剩余前移待下轮。 */
     if (uip_poll() && tcp_pending_len > 0) {
-        uip_send(tcp_pending, tcp_pending_len);
-        tcp_pending_len = 0;
+        int n = tcp_pending_len;
+        if (n > uip_conn->mss) {
+            n = uip_conn->mss;
+        }
+        uip_send(tcp_pending, n);
+        if (n < tcp_pending_len) {
+            memmove(tcp_pending, tcp_pending + n, tcp_pending_len - n);
+        }
+        tcp_pending_len -= n;
     }
 }
 
@@ -92,6 +103,8 @@ void uip_glue_init(void)
     ea.addr[4] = my_mac[4]; ea.addr[5] = my_mac[5];
     uip_setethaddr(ea);
     uip_sethostaddr(my_ip);
+    uip_setdraddr(my_dr);
+    uip_setnetmask(my_nm);
     rxbuf_head = rxbuf_tail = 0;
     rxbuf_full = 0;
     conn_established = conn_closed = conn_timedout = 0;
@@ -118,14 +131,22 @@ int uip_glue_connect(uint8_t *ip, uint16_t port)
     return 0;
 }
 
-/* 发送数据（存 pending，TCP POLL 时发出） */
+/* 发送数据（追加进 tcp_pending，TCP POLL 时一次性发出）。
+   TLS 握手会连续多次 send（ClientKeyExchange + CCS + Finished 各一个 sendrec），
+   覆盖式缓冲会丢前面的记录——必须累积。 */
 int uip_glue_send(uint8_t *buf, int len)
 {
-    if (len > (int)sizeof(tcp_pending)) {
-        len = sizeof(tcp_pending);
+    if (len < 0) {
+        return -1;
     }
-    memcpy(tcp_pending, buf, len);
-    tcp_pending_len = len;
+    if (tcp_pending_len + len > (int)sizeof(tcp_pending)) {
+        len = (int)sizeof(tcp_pending) - tcp_pending_len;
+        if (len <= 0) {
+            return 0;
+        }
+    }
+    memcpy(tcp_pending + tcp_pending_len, buf, len);
+    tcp_pending_len += len;
     return len;
 }
 
@@ -162,18 +183,18 @@ int uip_glue_timedout(void)
 void uip_udp_appcall(void)
 {
     if (uip_newdata()) {
+        /* 收到 DNS 响应：查询已送达，停止重发 */
+        dns_pending_len = 0;
         int n = uip_datalen();
         extern void pp_dns_recv(uint8_t *buf, int len);
         if (n > 0) {
             pp_dns_recv(uip_appdata, n);
         }
     }
-    /* UIP_POLL（周期）：发送待发 DNS 查询——若被 ARP drop（uip_len 变 0）则保留下轮重试 */
+    /* UIP_POLL（周期）：发送待发 DNS 查询。uIP 无 UDP 重传，若首包因 ARP 未解析
+       被 drop，靠 periodic 下次重发（dns_pending_len 未清），直到收到响应为止。 */
     if (uip_poll() && dns_pending_len > 0) {
         uip_send(dns_pending, dns_pending_len);
-        if (uip_len > 0) {
-            dns_pending_len = 0;
-        }
     }
 }
 

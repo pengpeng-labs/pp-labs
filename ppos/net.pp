@@ -542,7 +542,7 @@ fn dns_parse(d: int, len: int) {
             print_int(dns_resolved[3]);
             serial_putc(10);
         }
-        i = i + 12 + rdlen;
+        i = i + 10 + rdlen;
     }
     serial_print("DNS: no A record\n");
 }

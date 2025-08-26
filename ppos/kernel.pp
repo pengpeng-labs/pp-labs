@@ -21,7 +21,8 @@ import "../ppdb/db_doc.pp";
 import "../ppdb/db_persist.pp";
 
 /* 全局状态 */
-static tick_count: int = 0;
+static tick_count: int = 0;        /* 单调递增，供 uIP 时钟（pp_ticks）使用 */
+static tick_dot: int = 0;          /* 打点计数（每 10 tick 复位，勿与 tick_count 混用） */
 static heap_ptr: int = 0x1000000;   /* 堆从 16MB 开始 */
 static kb_w: int = 0;               /* 键盘缓冲写指针 */
 static kb_r: int = 0;               /* 键盘缓冲读指针 */
@@ -154,13 +155,14 @@ fn pic_remap() {
     outb(0xA1, 0xFF);
 }
 
-/* 定时器中断：每 10 tick 打印 '.' */
+/* 定时器中断：每 10 tick 打印 '.'（打点用独立计数，不重置 tick_count） */
 fn timer_handler() {
     outb(0x20, 0x20);
     tick_count = tick_count + 1;
-    if (tick_count >= 10) {
+    tick_dot = tick_dot + 1;
+    if (tick_dot >= 10) {
         serial_putc(46);
-        tick_count = 0;
+        tick_dot = 0;
     }
 }
 
