@@ -158,7 +158,7 @@
 
 ## Phase 15 — pp-db v2：Agent 结合
 
-- [ ] **P15-1** `db ask`（NL→操作）+ agent 数据模型（messages 表/kv 状态/doc 会话，替代 0x675000）
+- [ ] **P15-1** `db ask`（NL→操作）+ agent 数据模型（messages 表/kv 状态/doc 会话，替代 0x675000）——网络链路已打通（uIP 集成后 DNS→TCP→TLS→HTTPS→DeepSeek tool_call 全通）；剩 SQL `SELECT *` 支持 + 多轮 TLS 连接健壮性两项收尾
 - [x] **P15-2** MCP 工具（sql/kv/doc 三类）——验证通过（JSON-RPC tools/list + tools/call：SELECT 表格式返回、kv put/get、doc put/get 含 JSON 转义）
 - [ ] **P15-3** 关系索引（CREATE INDEX，参考移植）+ `SELECT ... TO JSON`
 
