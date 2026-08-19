@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."   # 到 ppdb/
 PPDB="${1:-}"
 if [ -z "$PPDB" ]; then
     echo "== 编译 cli.pp -> ppdb =="
-    if ! ../compiler/target/debug/pp obj cli.pp -o /tmp/ppdb_test.o 2>/tmp/ppdb_build.err; then
+    if ! ../pplc/target/debug/pp obj cli.pp -o /tmp/ppdb_test.o 2>/tmp/ppdb_build.err; then
         echo "FAIL: pp obj 编译失败"; cat /tmp/ppdb_build.err; exit 1
     fi
     if ! cc /tmp/ppdb_test.o -o /tmp/ppdb_test 2>>/tmp/ppdb_build.err; then

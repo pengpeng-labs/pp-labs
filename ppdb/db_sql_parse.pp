@@ -4,16 +4,17 @@
 /* 解析结果（全局状态，执行器读取） */
 static db_stmt_type: int = -1;        /* 0=create 1=insert 2=select 3=update 4=delete 5=drop */
 static db_stmt_table: int = 0;        /* 表名指针 */
-static db_stmt_cols: [int; 4];        /* 列名指针 */
+static db_stmt_cols: [4]int;        /* 列名指针 */
 static db_stmt_coln: int = 0;
-static db_stmt_types: [int; 4];       /* create 的列类型（0=int 1=str） */
-static db_stmt_vals: [int; 4];        /* 值（int 值或字符串指针） */
+static db_stmt_types: [4]int;       /* create 的列类型（0=int 1=str） */
+static db_stmt_vals: [4]int;        /* 值（int 值或字符串指针） */
 static db_stmt_valn: int = 0;
 static db_stmt_where_col: int = 0;    /* where 列名指针（0=无） */
 static db_stmt_where_op: int = 0;     /* 0=eq 1=ne 2=lt 3=gt 4=le 5=ge */
 static db_stmt_where_val: int = 0;    /* where 值（int 或字符串指针） */
 static db_stmt_where_isstr: int = 0;  /* where 值是否为字符串 */
 static db_stmt_limit: int = 0;        /* 0=不限 */
+static db_stmt_star: int = 0;         /* SELECT * 通配符（1=展开所有列） */
 
 /* ---- token 化辅助 ---- */
 
@@ -178,6 +179,7 @@ fn db_parse_sql(sql: int) -> int {
     db_stmt_valn = 0;
     db_stmt_where_col = 0;
     db_stmt_limit = 0;
+    db_stmt_star = 0;
     let kwbuf: int = 0x406200;
     let p: int = db_read_ident(sql, 0, kwbuf);
     if (p < 0) {
@@ -332,22 +334,28 @@ fn db_parse_sql(sql: int) -> int {
         return 0;
     }
     if (db_kw(kwbuf, "SELECT") == 1) {
-        /* SELECT col, ... FROM name [WHERE ...] [LIMIT n] */
+        /* SELECT col, ... FROM name [WHERE ...] [LIMIT n]；或 SELECT * FROM name */
         let ps: int = p;
-        while (1) {
-            let cname: int = 0x406400 + db_stmt_coln * 40;
-            let pc: int = db_read_ident(sql, ps, cname);
-            if (pc < 0) {
-                return -1;
-            }
-            db_stmt_cols[db_stmt_coln] = cname;
-            db_stmt_coln = db_stmt_coln + 1;
-            ps = pc;
-            let pc2: int = db_skip_sym(sql, ps, ",");
-            if (pc2 >= 0) {
-                ps = pc2;
-            } else {
-                break;
+        let pstar: int = db_skip_sym(sql, ps, "*");
+        if (pstar >= 0) {
+            db_stmt_star = 1;
+            ps = pstar;
+        } else {
+            while (1) {
+                let cname: int = 0x406400 + db_stmt_coln * 40;
+                let pc: int = db_read_ident(sql, ps, cname);
+                if (pc < 0) {
+                    return -1;
+                }
+                db_stmt_cols[db_stmt_coln] = cname;
+                db_stmt_coln = db_stmt_coln + 1;
+                ps = pc;
+                let pc2: int = db_skip_sym(sql, ps, ",");
+                if (pc2 >= 0) {
+                    ps = pc2;
+                } else {
+                    break;
+                }
             }
         }
         let pf: int = db_read_ident(sql, ps, kwbuf);

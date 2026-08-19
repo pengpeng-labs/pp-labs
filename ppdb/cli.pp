@@ -36,7 +36,7 @@ fn print_int(n: int) {
         serial_putc(48);
         return;
     }
-    let buf: [u8; 12];
+    let buf: [12]u8;
     let i: int = 0;
     while (n > 0) {
         buf[i] = 48 + (n % 10);
@@ -200,7 +200,7 @@ fn sql_create(sql: u64) -> int {
     if (after < 0) {
         return 0;
     }
-    let tname: [u8; 32];
+    let tname: [32]u8;
     let p: int = after;
     while (volatile_load8(sql + p) == 32) {
         p = p + 1;
@@ -260,7 +260,7 @@ fn sql_insert(sql: u64) -> int {
     if (p1 < 0 || p2 < 0) {
         return 0;
     }
-    let tname: [u8; 32];
+    let tname: [32]u8;
     let p: int = p1;
     while (volatile_load8(sql + p) == 32) {
         p = p + 1;
@@ -279,7 +279,7 @@ fn sql_insert(sql: u64) -> int {
         return 1;
     }
     /* 解析 VALUES (...) 内的值（最多 4 个） */
-    let vals: [u64; 4];
+    let vals: [4]u64;
     let vi: int = 0;
     let q: int = p2;
     /* 跳到 '(' */
@@ -297,7 +297,7 @@ fn sql_insert(sql: u64) -> int {
         let c: int = volatile_load8(sql + q);
         if (c == 39) {   /* ' 字符串 */
             q = q + 1;
-            let sbuf: [u8; 32];
+            let sbuf: [32]u8;
             let si: int = 0;
             while (volatile_load8(sql + q) != 39 && volatile_load8(sql + q) != 0 && si < 31) {
                 sbuf[si] = volatile_load8(sql + q);
@@ -337,7 +337,7 @@ fn sql_select(sql: u64) -> int {
     if (p1 < 0) {
         return 0;
     }
-    let tname: [u8; 32];
+    let tname: [32]u8;
     let p: int = p1;
     while (volatile_load8(sql + p) == 32) {
         p = p + 1;
@@ -449,9 +449,9 @@ fn cli_exec(buf: u64) {
         return;
     }
     if (cli_starts(buf, "kv ") == 1) {
-        let op: [u8; 16];
-        let k: [u8; 32];
-        let v: [u8; 64];
+        let op: [16]u8;
+        let k: [32]u8;
+        let v: [64]u8;
         cli_arg(buf + 3, 0, ptr_to_int(&op[0]));
         cli_arg(buf + 3, 1, ptr_to_int(&k[0]));
         if (str_eq(ptr_to_int(&op[0]), "get") == 1) {
@@ -486,9 +486,9 @@ fn cli_exec(buf: u64) {
         return;
     }
     if (cli_starts(buf, "doc ") == 1) {
-        let op: [u8; 16];
-        let n: [u8; 32];
-        let c: [u8; 128];
+        let op: [16]u8;
+        let n: [32]u8;
+        let c: [128]u8;
         cli_arg(buf + 4, 0, ptr_to_int(&op[0]));
         cli_arg(buf + 4, 1, ptr_to_int(&n[0]));
         if (str_eq(ptr_to_int(&op[0]), "get") == 1) {
@@ -517,13 +517,13 @@ fn cli_exec(buf: u64) {
         return;
     }
     if (cli_starts(buf, "save ") == 1) {
-        let f: [u8; 64];
+        let f: [64]u8;
         cli_arg(buf + 5, 0, ptr_to_int(&f[0]));
         db_save(ptr_to_int(&f[0]));
         return;
     }
     if (cli_starts(buf, "load ") == 1) {
-        let f: [u8; 64];
+        let f: [64]u8;
         cli_arg(buf + 5, 0, ptr_to_int(&f[0]));
         db_load(ptr_to_int(&f[0]));
         return;
@@ -569,7 +569,7 @@ fn cli_readline(buf: u64, cap: int) -> int {
     return l;
 }
 
-static cli_line: [u8; 512];   /* 输入行缓冲：static 而非栈，避免跨函数指针问题 */
+static cli_line: [512]u8;   /* 输入行缓冲：static 而非栈，避免跨函数指针问题 */
 
 fn main() -> int {
     serial_print("pp-db CLI (independent database)\n");

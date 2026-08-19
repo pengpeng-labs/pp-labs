@@ -27,7 +27,7 @@ fn print_int(n: int) {
         serial_putc(48);
         return;
     }
-    let buf: [u8; 12];
+    let buf: [12]u8;
     let i: int = 0;
     while (n > 0) {
         buf[i] = 48 + (n % 10);
@@ -45,7 +45,7 @@ fn main() -> int {
     let tid: int = db_create_table("t", 2, 0, 1, 0, 0);
     print_int(tid);
     serial_putc(10);
-    let v1: [u64; 4];
+    let v1: [4]u64;
     let s1: str = "alice";
     let s2: str = "bob";
     let s3: str = "carol";

@@ -1,7 +1,7 @@
 /* host_ppos.pp：pp-db 的 pp-os 宿主——页提供者用固定内存页区（0x680000，128×512B） */
 
 static db_next_page: int = 0;
-static db_free_list: [int; 128];
+static db_free_list: [128]int;
 static db_free_n: int = 0;
 
 fn db_page_alloc() -> int {

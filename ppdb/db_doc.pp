@@ -1,8 +1,8 @@
 /* db_doc.pp：Doc 存储（JSON 文档按名存取）
    v1：≤16 文档；name ≤32B；content ≤128B；复用 json.pp 能力（调用方校验） */
 
-static doc_names: [[u8; 32]; 16];
-static doc_cont: [[u8; 128]; 16];
+static doc_names: [16][32]u8;
+static doc_cont: [16][128]u8;
 static doc_count: int = 0;
 
 /* 按名查找文档，返回索引；未找到 -1 */

@@ -2,8 +2,8 @@
    v1：≤64 键值对；key ≤32B；value ≤64B
    （有序映射结构；SkipList 参考移植列为 v2 优化项） */
 
-static kv_keys: [[u8; 32]; 64];
-static kv_vals: [[u8; 64]; 64];
+static kv_keys: [64][32]u8;
+static kv_vals: [64][64]u8;
 static kv_count: int = 0;
 
 /* 比较 key 与 kv_keys[i]：返回 0 相等 / 1 key 大 / -1 key 小 */

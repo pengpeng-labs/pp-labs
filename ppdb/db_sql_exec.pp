@@ -2,7 +2,7 @@
 
 /* 数字转字符串写缓冲（宿主无关，避免依赖 pp-os 的 itoa_buf），返回长度 */
 fn db_itoa(n: int, buf: int) -> int {
-    let tmp: [u8; 12];
+    let tmp: [12]u8;
     let i: int = 0;
     if (n == 0) {
         volatile_store8(buf, 48);
@@ -86,8 +86,45 @@ fn db_match(rec: u64, tid: int) -> int {
     return 0;
 }
 
+/* SELECT * 展开：把表全部列名（占位 c0/c1/...）填入 db_stmt_cols，并设 db_stmt_coln。
+   v1 表目录不存列名，故用占位符；投影仍按位置（列顺序 = 表列顺序）。 */
+fn db_expand_star(tid: int) {
+    let n: int = db_tcols[tid];
+    let i: int = 0;
+    while (i < n) {
+        let cname: int = 0x406400 + i * 40;
+        volatile_store8(cname, 99);   /* 'c' */
+        let v: int = i;
+        let tmp: [4]u8;
+        let j: int = 0;
+        if (v == 0) {
+            tmp[j] = 48;
+            j = j + 1;
+        } else {
+            while (v > 0) {
+                tmp[j] = 48 + (v % 10);
+                v = v / 10;
+                j = j + 1;
+            }
+        }
+        let k: int = 0;
+        while (j > 0) {
+            j = j - 1;
+            volatile_store8(cname + 1 + k, tmp[j]);
+            k = k + 1;
+        }
+        volatile_store8(cname + 1 + k, 0);
+        db_stmt_cols[i] = cname;
+        i = i + 1;
+    }
+    db_stmt_coln = n;
+}
+
 /* 执行 SELECT：输出表格式（列名 + 匹配行） */
 fn db_exec_select(tid: int) {
+    if (db_stmt_star == 1) {
+        db_expand_star(tid);
+    }
     /* 打印列名 */
     let i: int = 0;
     while (i < db_stmt_coln) {
@@ -140,6 +177,9 @@ fn db_exec_select(tid: int) {
 /* 执行 SELECT 写缓冲：结果写入 out，返回长度（供 MCP sql 工具返回给 LLM） */
 fn db_select_to_buf(tid: int, out: int) -> int {
     let o: int = 0;
+    if (db_stmt_star == 1) {
+        db_expand_star(tid);
+    }
     /* 列名 */
     let i: int = 0;
     while (i < db_stmt_coln) {
@@ -213,7 +253,7 @@ fn db_select_to_buf(tid: int, out: int) -> int {
 
 /* 执行 INSERT */
 fn db_exec_insert(tid: int) {
-    let vals: [u64; 4];
+    let vals: [4]u64;
     let i: int = 0;
     while (i < db_stmt_valn && i < 4) {
         vals[i] = db_stmt_vals[i];

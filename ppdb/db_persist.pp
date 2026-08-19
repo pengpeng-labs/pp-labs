@@ -9,7 +9,7 @@
      Doc：u32 文档数 + 条数 × (name[32] + cont[128])
      页区：u32 页数 npages + npages × 512B */
 
-static db_img: [u8; 12000];   /* 头部/目录/KV/Doc 拼装缓冲 */
+static db_img: [12000]u8;   /* 头部/目录/KV/Doc 拼装缓冲 */
 static db_img_off: int = 0;
 
 fn img_u32(v: int) {

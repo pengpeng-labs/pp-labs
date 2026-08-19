@@ -9,12 +9,12 @@ static DB_NPAGES: int = 128;
 
 /* ---- 表目录（≤8 表，每表 ≤4 列）---- */
 static db_ntables: int = 0;
-static db_tname_buf: [[u8; 32]; 8];   /* 表名稳定存储（目录存指针，指向这里） */
-static db_tname: [u64; 8];
-static db_tcols: [int; 8];
-static db_ttypes: [[int; 4]; 8];   /* 0=int(4B) 1=str(32B) */
-static db_tfirst: [int; 8];      /* 首页号 */
-static db_tlast: [int; 8];       /* 尾页号 */
+static db_tname_buf: [8][32]u8;   /* 表名稳定存储（目录存指针，指向这里） */
+static db_tname: [8]u64;
+static db_tcols: [8]int;
+static db_ttypes: [8][4]int;   /* 0=int(4B) 1=str(32B) */
+static db_tfirst: [8]int;      /* 首页号 */
+static db_tlast: [8]int;       /* 尾页号 */
 
 /* 记录大小（字节） */
 fn db_rec_size(tid: int) -> int {
@@ -143,7 +143,7 @@ fn db_page_space(p: u64) -> int {
     return fp - (40 + nslots * 8);
 }
 
-/* 插入一行：vals 指向值数组（[u64;4]：每列一个 8 字节槽；str 列存指针）；返回 1 成功 */
+/* 插入一行：vals 指向值数组（[4]u64：每列一个 8 字节槽；str 列存指针）；返回 1 成功 */
 fn db_insert(tid: int, vals: u64) -> int {
     let rsize: int = db_rec_size(tid);
     let pg: int = db_tlast[tid];

@@ -1,8 +1,8 @@
 /* host_native.pp：pp-db 宿主机宿主——页提供者用静态缓冲（经 pp 编译器在宿主机运行） */
 
 static db_next_page: int = 0;
-static db_pages: [u8; 65536];   /* 128 页 × 512B */
-static db_free_list: [int; 128];
+static db_pages: [65536]u8;   /* 128 页 × 512B */
+static db_free_list: [128]int;
 static db_free_n: int = 0;
 
 fn db_page_alloc() -> int {
