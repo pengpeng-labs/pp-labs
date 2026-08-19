@@ -254,7 +254,7 @@ fn https_get(dst_ip: int, dst_port: int, host: str, path: str) {
 
 /* 数字转字符串写入 buf（十进制），返回长度 */
 fn itoa_buf(n: int, buf: int) -> int {
-    let tmp: [u8; 12];
+    let tmp: [12]u8;
     let i: int = 0;
     if (n == 0) {
         volatile_store8(buf, 48);

@@ -10,10 +10,10 @@ static tx_tail: int = 0;   /* 发送尾指针 */
 static rx_tail: int = 0;   /* 接收尾指针 */
 
 static net_ok: int = 0;
-static my_mac: [u8; 6];
-static my_ip: [u8; 4];
-static gateway_mac: [u8; 6];
-static dns_resolved: [u8; 4];
+static my_mac: [6]u8;
+static my_ip: [4]u8;
+static gateway_mac: [6]u8;
+static dns_resolved: [4]u8;
 static http_len: int = 0;
 
 fn mmio_read(off: int) -> int {
@@ -258,7 +258,7 @@ fn print_int(n: int) {
         serial_putc(45);
         n = 0 - n;
     }
-    let buf: [u8; 12];
+    let buf: [12]u8;
     let i: int = 0;
     while (n > 0) {
         buf[i] = 48 + (n % 10);
@@ -664,7 +664,7 @@ fn pp_e1000_send(buf: u64, len: int) {
     e1000_send(buf, len);
 }
 /* UDP 帧暂存（glue 拦截 DNS 响应 → pp 解析） */
-static udp_frame: [u8; 600];
+static udp_frame: [600]u8;
 static udp_frame_len: int = 0;
 
 /* 网关 MAC 回填（glue ARP reply 调用） */

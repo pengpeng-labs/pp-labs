@@ -60,12 +60,12 @@ fn wasm_skip_name(src: int, pos: int) -> int {
 
 /* ---- 解析结果 ---- */
 static wasm_type_count: int = 0;          /* 函数类型数 */
-static wasm_type_params: [int; 8];        /* 每类型参数数 */
+static wasm_type_params: [8]int;        /* 每类型参数数 */
 static wasm_import_count: int = 0;        /* 导入数 */
 static wasm_func_count: int = 0;          /* 函数总数（含导入） */
 static wasm_code_count: int = 0;          /* 代码段函数体数 */
-static wasm_code_off: [int; 8];           /* 每个函数体的字节偏移 */
-static wasm_code_len: [int; 8];           /* 每个函数体长度 */
+static wasm_code_off: [8]int;           /* 每个函数体的字节偏移 */
+static wasm_code_len: [8]int;           /* 每个函数体长度 */
 static wasm_mem_pages: int = 0;           /* 内存页数 */
 static wasm_export_count: int = 0;
 
@@ -235,9 +235,9 @@ fn wasm_dump() {
 static wasm_mem: int = 0x405000;      /* wasm 线性内存 */
 static wasm_base: int = 0;            /* 模块基址 */
 static wasm_trace: int = 0;           /* 执行轨迹计数 */
-static wasm_stack: [int; 256];        /* 操作数栈 */
+static wasm_stack: [256]int;        /* 操作数栈 */
 static wasm_sp: int = 0;              /* 栈顶索引 */
-static wasm_locals: [int; 64];        /* 局部变量（参数 + local） */
+static wasm_locals: [64]int;        /* 局部变量（参数 + local） */
 static wasm_localn: int = 0;
 
 fn ws_push(v: int) {

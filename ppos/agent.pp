@@ -36,7 +36,7 @@ fn agent_append(dst: int, dpos: int, s: str) -> int {
    循环 ≤3 轮：带 tools 请求 → 若有 tool_calls 则执行并回传，否则打印回答并持久化历史 */
 fn agent_chat(text: int, tlen: int) {    agent_load_key();
     /* ARP 解析网关 */
-    let gw: [u8; 4];
+    let gw: [4]u8;
     gw[0] = 10;
     gw[1] = 0;
     gw[2] = 2;
@@ -219,7 +219,7 @@ fn agent_chat(text: int, tlen: int) {    agent_load_key();
 
 /* ---- db ask：NL → 数据操作（P15-1）---- */
 
-static db_ask_msgname: [u8; 32];   /* "messages" 表名缓冲 */
+static db_ask_msgname: [32]u8;   /* "messages" 表名缓冲 */
 
 /* 会话消息落库：messages(id int, role str, content str)——id 自增（kv 计数器 msgid）
    role/content 为字符串地址（int）；str 列定长 32B，超长截断 */
@@ -245,7 +245,7 @@ fn db_msg_log(role: int, content: int) {
     }
     mid = mid + 1;
     /* 写回计数器 */
-    let mtmp: [u8; 12];
+    let mtmp: [12]u8;
     let mi2: int = 0;
     let mm: int = mid;
     while (mm > 0) {
@@ -262,7 +262,7 @@ fn db_msg_log(role: int, content: int) {
     volatile_store8(midbuf + mi3, 0);
     kv_put(0x407180, midbuf);
     /* 插入 messages 行：id, role, content（地址即 u64 值） */
-    let vals: [u64; 4];
+    let vals: [4]u64;
     vals[0] = mid;
     vals[1] = role;
     vals[2] = content;

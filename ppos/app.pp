@@ -2,8 +2,8 @@
    内核 = 机制（fs/net/tls/json/协程/注册表）；app = 策略（browse/ds/sql/...）。
    注册表 = 名字/描述/id；入口经 app_dispatch 分发（编译期注册，id 与注册顺序一致）。 */
 
-static app_name: [int; 8];   /* 名字指针（int 存指针） */
-static app_desc: [int; 8];   /* 描述指针 */
+static app_name: [8]int;   /* 名字指针（int 存指针） */
+static app_desc: [8]int;   /* 描述指针 */
 static app_count: int = 0;
 
 /* 注册 app，返回 id（与 app_dispatch 分支顺序一致） */

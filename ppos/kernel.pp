@@ -356,7 +356,7 @@ fn cmd_db() {
     } else if (str_starts(0x400200, "db create ")) {
         /* db create <name> <int|str> ...（≤4 列，简化版 CREATE） */
         let pos: int = parse_arg(10, 0x400300);   /* name → 0x400300 */
-        let ct: [int; 4];
+        let ct: [4]int;
         let cn: int = 0;
         while (cn < 4) {
             let pp: int = parse_arg(pos, 0x400400);
@@ -422,7 +422,7 @@ fn process_line() {
             serial_print("fs full\n");
         }
     } else if (str_eq(0x400200, "arp")) {
-        let target: [u8; 4];
+        let target: [4]u8;
         target[0] = 10;
         target[1] = 0;
         target[2] = 2;
@@ -440,7 +440,7 @@ fn process_line() {
         }
     } else if (str_starts(0x400200, "dns ")) {
         /* 先 ARP 解析网关 10.0.2.2 */
-        let gw: [u8; 4];
+        let gw: [4]u8;
         gw[0] = 10;
         gw[1] = 0;
         gw[2] = 2;
@@ -468,7 +468,7 @@ fn process_line() {
         }
     } else if (str_starts(0x400200, "https ")) {
         /* 先 ARP 解析网关 */
-        let gw: [u8; 4];
+        let gw: [4]u8;
         gw[0] = 10;
         gw[1] = 0;
         gw[2] = 2;
@@ -611,7 +611,7 @@ fn process_line() {
     } else if (str_eq(0x400200, "wasm test")) {
         /* 内存构造 hello.wasm（import fd_write + 输出 "hi\n"）并运行 */
         let w: int = 0x401400;
-                        let wb: [u8; 110];
+                        let wb: [110]u8;
         wb[0]=0x00; wb[1]=0x61; wb[2]=0x73; wb[3]=0x6D; wb[4]=0x01;
         wb[5]=0x00; wb[6]=0x00; wb[7]=0x00; wb[8]=0x01; wb[9]=0x09;
         wb[10]=0x01; wb[11]=0x60; wb[12]=0x04; wb[13]=0x7F; wb[14]=0x7F;
@@ -705,7 +705,7 @@ fn process_line() {
         serial_print("apps: app list | app run <name> | app help <name>\n");
     } else if (str_starts(0x400200, "http")) {
         /* 先 ARP 解析网关 10.0.2.2 */
-        let gw: [u8; 4];
+        let gw: [4]u8;
         gw[0] = 10;
         gw[1] = 0;
         gw[2] = 2;
@@ -857,7 +857,7 @@ fn kmain() -> int {
     autotest_cmd("db create notes int str");
     autotest_cmd("sql INSERT INTO notes (id,msg) VALUES (1,'hello')");
     autotest_cmd("sql INSERT INTO notes (id,msg) VALUES (2,'world')");
-    autotest_cmd("db ask what messages are in the notes table");
+    autotest_cmd("db ask First list all rows in the notes table. Then store key task1 with value done in the kv store. Then save a document named report with content finished.");
     autotest_cmd("db list");
     autotest_cmd("sql SELECT id,role,content FROM messages");
     autotest_cmd("db get msgid");

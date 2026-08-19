@@ -1,10 +1,10 @@
 /* 内存文件系统：16 个文件，名 ≤32 字节；内容存共享 128KB 缓冲池（可变大小，总容量 131072B） */
 
-static fs_pool: [u8; 131072];
-static fs_off: [int; 16];      /* 文件内容在池中的偏移 */
-static fs_name: [[u8; 32]; 16];
-static fs_size: [int; 16];
-static fs_used: [int; 16];
+static fs_pool: [131072]u8;
+static fs_off: [16]int;      /* 文件内容在池中的偏移 */
+static fs_name: [16][32]u8;
+static fs_size: [16]int;
+static fs_used: [16]int;
 static fs_bump: int = 0;       /* 池分配游标（文件不收缩） */
 
 fn fs_init() {

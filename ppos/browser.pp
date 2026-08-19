@@ -19,7 +19,7 @@ fn web_fetch(host: str) -> int {
         }
     }
     /* IP：数字开头直解，否则 DNS */
-    let ip: [u8; 4];
+    let ip: [4]u8;
     ip[0] = 0;
     ip[1] = 0;
     ip[2] = 0;
@@ -60,7 +60,7 @@ fn web_fetch(host: str) -> int {
         ip[3] = dns_resolved[3];
     }
     /* ARP 网关（解析 gateway_mac） */
-    let gw: [u8; 4];
+    let gw: [4]u8;
     gw[0] = 10;
     gw[1] = 0;
     gw[2] = 2;

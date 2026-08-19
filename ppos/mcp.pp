@@ -3,8 +3,8 @@
    agent 通过本层调用工具；将来可桥接外部 MCP 服务器（网络版）。 */
 
 /* ---- 工具注册表（MCP tools）---- */
-static mcp_tool_name: [int; 8];   /* 工具名指针 */
-static mcp_tool_desc: [int; 8];   /* 工具描述指针 */
+static mcp_tool_name: [8]int;   /* 工具名指针 */
+static mcp_tool_desc: [8]int;   /* 工具描述指针 */
 static mcp_tool_count: int = 0;
 
 /* 注册工具（初始化时调用） */

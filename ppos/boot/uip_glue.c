@@ -124,6 +124,10 @@ int uip_glue_connect(uint8_t *ip, uint16_t port)
     conn_established = conn_closed = conn_timedout = 0;
     tcp_pending_len = 0;
     dns_pending_len = 0;
+    /* 每轮连接重置接收环形缓冲：跨轮残留会污染下一轮的 TLS 记录，
+       且 rxbuf_head 逼近缓冲末尾时 space 计算会截断大响应（Certificate） */
+    rxbuf_head = rxbuf_tail = 0;
+    rxbuf_full = 0;
     struct uip_conn *c = uip_connect(&a, htons(port));
     if (c == NULL) {
         return -1;
