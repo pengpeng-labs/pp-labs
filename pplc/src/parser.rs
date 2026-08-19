@@ -6,11 +6,12 @@ use crate::lexer::{Token, TokenKind};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    no_struct_init: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, no_struct_init: false }
     }
 
     fn peek(&self) -> &TokenKind {
@@ -122,8 +123,14 @@ impl Parser {
         let name = self.expect_ident("function name")?;
         self.expect(&TokenKind::LParen, "'('")?;
         let mut params = Vec::new();
+        let mut is_var_arg = false;
         if !self.eat(&TokenKind::RParen) {
             loop {
+                if self.eat(&TokenKind::Ellipsis) {
+                    is_var_arg = true;
+                    self.expect(&TokenKind::RParen, "')' after '...'")?;
+                    break;
+                }
                 let pname = self.expect_ident("parameter name")?;
                 self.expect(&TokenKind::Colon, "':'")?;
                 let ptype = self.parse_type()?;
@@ -144,6 +151,7 @@ impl Parser {
             name,
             params,
             ret,
+            is_var_arg,
         })
     }
 
@@ -152,7 +160,38 @@ impl Parser {
             let inner = self.parse_type()?;
             return Ok(Type::Ptr(Box::new(inner)));
         }
+        if self.eat(&TokenKind::Fn) {
+            // 函数指针类型：fn(param, ...) -> ret
+            self.expect(&TokenKind::LParen, "'(' after fn")?;
+            let mut params = Vec::new();
+            if !self.eat(&TokenKind::RParen) {
+                loop {
+                    params.push(self.parse_type()?);
+                    if self.eat(&TokenKind::Comma) {
+                        continue;
+                    }
+                    self.expect(&TokenKind::RParen, "')'")?;
+                    break;
+                }
+            }
+            let ret = if self.eat(&TokenKind::Arrow) {
+                self.parse_type()?
+            } else {
+                Type::Void
+            };
+            return Ok(Type::Fn(params, Box::new(ret)));
+        }
         if self.eat(&TokenKind::LBracket) {
+            // 数组类型，两种语法：
+            //   [N]T   新：长度前置（Go/Zig 式）
+            //   [T; N] 旧：类型前置（Rust 式，暂时兼容，迁移完移除）
+            if let TokenKind::Int(v) = self.peek() {
+                let len = *v;
+                self.advance();
+                self.expect(&TokenKind::RBracket, "']'")?;
+                let elem = self.parse_type()?;
+                return Ok(Type::Array(Box::new(elem), len as usize));
+            }
             let elem = self.parse_type()?;
             self.expect(&TokenKind::Semicolon, "';' in array type")?;
             let t = self.advance();
@@ -235,10 +274,26 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::While { cond, body })
             }
+            TokenKind::For => {
+                self.advance();
+                let var = self.expect_ident("loop variable")?;
+                self.expect(&TokenKind::In, "'in' after loop variable")?;
+                self.no_struct_init = true;
+                let iter = self.parse_expr()?;
+                self.no_struct_init = false;
+                let body = self.parse_block()?;
+                Ok(Stmt::For { var, iter, body })
+            }
             TokenKind::Break => {
                 self.advance();
                 self.expect(&TokenKind::Semicolon, "';' after break")?;
                 Ok(Stmt::Break)
+            }
+            TokenKind::Defer => {
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::Semicolon, "';' after defer")?;
+                Ok(Stmt::Defer(Box::new(e)))
             }
             TokenKind::Continue => {
                 self.advance();
@@ -323,7 +378,7 @@ impl Parser {
             TokenKind::Caret => 4,
             TokenKind::Amp => 5,
             TokenKind::EqEq | TokenKind::NotEq | TokenKind::Lt | TokenKind::Gt | TokenKind::Le
-            | TokenKind::Ge => 6,
+            | TokenKind::Ge | TokenKind::In => 6,
             TokenKind::Shl | TokenKind::Shr => 7,
             TokenKind::Plus | TokenKind::Minus => 8,
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => 9,
@@ -352,6 +407,7 @@ impl Parser {
             TokenKind::Caret => BinOp::BitXor,
             TokenKind::Shl => BinOp::Shl,
             TokenKind::Shr => BinOp::Shr,
+            TokenKind::In => BinOp::In,
             _ => unreachable!(),
         }
     }
@@ -420,16 +476,77 @@ impl Parser {
         loop {
             if self.eat(&TokenKind::Dot) {
                 let field = self.expect_ident("field name")?;
-                expr = Expr::Field {
-                    base: Box::new(expr),
-                    field,
-                };
+                if self.eat(&TokenKind::LParen) {
+                    // 方法糖：p.method(args) ≡ method(p, args)
+                    let mut args = Vec::new();
+                    args.push(expr);
+                    if !self.eat(&TokenKind::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.eat(&TokenKind::Comma) {
+                                continue;
+                            }
+                            self.expect(&TokenKind::RParen, "')'")?;
+                            break;
+                        }
+                    }
+                    expr = Expr::Call { callee: field, args };
+                } else {
+                    expr = Expr::Field {
+                        base: Box::new(expr),
+                        field,
+                    };
+                }
             } else if self.eat(&TokenKind::LBracket) {
-                let idx = self.parse_expr()?;
-                self.expect(&TokenKind::RBracket, "']'")?;
-                expr = Expr::Index {
-                    base: Box::new(expr),
-                    index: Box::new(idx),
+                if self.eat(&TokenKind::Colon) {
+                    // 切片 s[:b] 或 s[:]
+                    if self.eat(&TokenKind::RBracket) {
+                        expr = Expr::Slice {
+                            base: Box::new(expr),
+                            lo: None,
+                            hi: None,
+                        };
+                    } else {
+                        let hi = self.parse_expr()?;
+                        self.expect(&TokenKind::RBracket, "']'")?;
+                        expr = Expr::Slice {
+                            base: Box::new(expr),
+                            lo: None,
+                            hi: Some(Box::new(hi)),
+                        };
+                    }
+                } else {
+                    let first = self.parse_expr()?;
+                    if self.eat(&TokenKind::Colon) {
+                        // 切片 s[a:b] 或 s[a:]
+                        if self.eat(&TokenKind::RBracket) {
+                            expr = Expr::Slice {
+                                base: Box::new(expr),
+                                lo: Some(Box::new(first)),
+                                hi: None,
+                            };
+                        } else {
+                            let hi = self.parse_expr()?;
+                            self.expect(&TokenKind::RBracket, "']'")?;
+                            expr = Expr::Slice {
+                                base: Box::new(expr),
+                                lo: Some(Box::new(first)),
+                                hi: Some(Box::new(hi)),
+                            };
+                        }
+                    } else {
+                        self.expect(&TokenKind::RBracket, "']'")?;
+                        expr = Expr::Index {
+                            base: Box::new(expr),
+                            index: Box::new(first),
+                        };
+                    }
+                }
+            } else if self.eat(&TokenKind::As) {
+                let ty = self.parse_type()?;
+                expr = Expr::Cast {
+                    expr: Box::new(expr),
+                    ty,
                 };
             } else {
                 break;
@@ -447,6 +564,14 @@ impl Parser {
             TokenKind::Float(v) => {
                 self.advance();
                 Ok(Expr::Float(v))
+            }
+            TokenKind::True => {
+                self.advance();
+                Ok(Expr::Bool(true))
+            }
+            TokenKind::False => {
+                self.advance();
+                Ok(Expr::Bool(false))
             }
             TokenKind::Str(s) => {
                 self.advance();
@@ -467,7 +592,7 @@ impl Parser {
                         }
                     }
                     Ok(Expr::Call { callee: name, args })
-                } else if self.eat(&TokenKind::LBrace) {
+                } else if !self.no_struct_init && self.eat(&TokenKind::LBrace) {
                     let mut fields = Vec::new();
                     if !self.eat(&TokenKind::RBrace) {
                         loop {
@@ -492,6 +617,22 @@ impl Parser {
                 let e = self.parse_expr()?;
                 self.expect(&TokenKind::RParen, "')'")?;
                 Ok(e)
+            }
+            TokenKind::LBracket => {
+                // 数组字面量：[elem, elem, ...]
+                self.advance();
+                let mut elems = Vec::new();
+                if !self.eat(&TokenKind::RBracket) {
+                    loop {
+                        elems.push(self.parse_expr()?);
+                        if self.eat(&TokenKind::Comma) {
+                            continue;
+                        }
+                        self.expect(&TokenKind::RBracket, "']'")?;
+                        break;
+                    }
+                }
+                Ok(Expr::ArrayLit(elems))
             }
             other => {
                 let t = &self.tokens[self.pos];

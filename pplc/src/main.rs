@@ -78,13 +78,13 @@ fn codegen<'ctx>(cg: &mut codegen::Codegen<'ctx>, items: &[ast::Item]) -> Result
 
     for item in items {
         if let ast::Item::Extern(p) = item {
-            cg.declare_prototype(p)?;
+            cg.declare_prototype(p, true)?;
         }
     }
     // 先声明所有用户函数原型，支持前向引用（如 kmain 调用后定义的函数）。
     for item in items {
         if let ast::Item::Function(f) = item {
-            cg.declare_prototype(&f.proto)?;
+            cg.declare_prototype(&f.proto, false)?;
         }
     }
     // 声明全局变量。

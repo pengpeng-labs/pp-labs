@@ -9,7 +9,7 @@
 
 ## 2. 词法（Lexical）
 
-- 关键字（草案）：`fn` `let` `if` `else` `while` `return` `struct` `import` `extern` `unsafe` `asm` `true` `false`
+- 关键字：`fn` `let` `if` `else` `while` `for` `in` `return` `struct` `import` `extern` `static` `break` `continue` `true` `false` `as` `defer`（`unsafe` `asm` 纸上待实现）
 - 标识符：`[A-Za-z_][A-Za-z0-9_]*`
 - 字面量：整数 / 浮点 / 布尔 / 字符 / 字符串
 - 注释：`//` 行注释，`/* */` 块注释
@@ -21,22 +21,41 @@ TODO：补全精确 token 定义。
 
 ```ebnf
 program     = { decl } ;
-decl        = func_decl | struct_decl | import_decl | extern_decl ;
+decl        = func_decl | struct_decl | import_decl | extern_decl | static_decl ;
 func_decl   = "fn" ident "(" [ params ] ")" [ "->" type ] block ;
-params      = param { "," param } ;
+params      = param { "," param } [ "," "..." ] ;   (* 末尾 ... = variadic *)
 param       = ident ":" type ;
 struct_decl = "struct" ident "{" { field } "}" ;
 block       = "{" { stmt } "}" ;
-stmt        = let_stmt | if_stmt | while_stmt | return_stmt | expr_stmt ;
+stmt        = let_stmt | if_stmt | while_stmt | for_stmt | defer_stmt | return_stmt | expr_stmt ;
+for_stmt    = "for" ident "in" expr block ;
+defer_stmt  = "defer" expr ";" ;                    (* 函数退出点 LIFO 执行 *)
+type        = "int" | "float" | "bool" | "str" | "u8" | "u16" | "u32" | "u64"
+            | "[" int "]" type               (* 定长数组 [N]T，长度前置 *)
+            | "*" type                        (* 裸指针 *)
+            | "fn" "(" [ types ] ")" [ "->" type ]   (* 函数指针 *)
+            | ident                          (* 结构体名 *)
+            ;
 ```
 
-TODO：补全表达式层（`expr`/优先级）、`unsafe`/`asm`/系统层语法。
+TODO：补全表达式层（`expr`/优先级，含 `x in s` 成员判断、`range(n)` 序列、`expr as type` 显式 cast、`[e, e, ...]` 数组字面量）。
+
+已落地表达式子集（2026-08）：
+```ebnf
+postfix     = primary { "." ident [ "(" [ args ] ")" ]   (* 字段访问 / 方法糖 *)
+                       | "[" slice_or_index "]"           (* 下标 / 切片 *)
+                       | "as" type } ;
+slice_or_index = [ expr ] ":" [ expr ]                    (* 切片 s[a:b]/s[a:]/s[:b]/s[:] *)
+               | expr ;                                   (* 下标 s[i] *)
+call        = ident "(" [ args ] ")" ;                    (* len(x) 等内建 *)
+```
 
 ## 4. 类型系统
 
-- 基础类型：`int` `float` `bool` `char` `string`
-- 复合类型：`struct`（值语义）
-- 系统层类型（§6）：`pointer`
+- 基础类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr, len}` 字节切片，字面量带长) `u8/u16/u32/u64`
+- 复合类型：`struct`（值语义）、`[N]T` 定长数组（长度前置 Go/Zig 式）、`fn(...) -> ret` 函数指针
+- 系统层类型（§6）：`*T` 裸指针
+- 内建：`len(x)`（str 返回运行时长度 i64，数组返回编译期长度）；切片 `s[a:b]`/`s[a:]`/`s[:b]`/`s[:]` 产生新 `str` 视图
 
 TODO：类型规则、隐式/显式转换、字面量类型。
 
@@ -60,10 +79,11 @@ TODO：类型规则、隐式/显式转换、字面量类型。
 - 调用约定（TODO）
 - 内存模型：核心子集栈 + 值语义；堆仅在 std-lib 提供显式 allocator
 
-### 已知编译器问题（待修）
+### 已知编译器问题（已修复）
 
-1. **同名函数重定义**：同一编译单元内两个同名 `fn` 不会报错，而是都编译进同一个 LLVM 函数（第二个 body 追加到第一个之后，entry block 混乱）→ 调用行为不确定。编译器应报"重复定义"错误。规避：保持函数名唯一。
-2. **variadic extern 参数错位**：extern 声明的函数类型硬编码 `is_var_arg=false`（codegen.rs `fn_type`）。调用真实 variadic 的 libc 函数（如 `open(const char*, int, ...)`）时，ARM64 上第 3 个及之后的参数（mode 等）传递错乱（实测 mode 丢失，文件权限异常）。规避：避免依赖 variadic 的第 3+ 参数；用非 variadic 替代（如 `fchmod` 补权限、`creat` 等）；或将来支持 `extern fn open(path: str, flags: int, ...)` 语法。
+1. ~~**同名函数重定义**~~：✅ 已修复（2026-08）——`compile_function` 检查函数已有 body 时报"重复定义"。
+2. ~~**variadic extern 参数错位**~~：✅ 已修复（2026-08）——支持 `extern fn open(path: str, flags: int, ...)` 的 `...` 语法，`fn_type` 正确设 `is_var_arg`。
+3. ~~**数组字面量不支持**~~：✅ 已修复（2026-08）——支持 `let a: [4]int = [1, 2, 3, 4];`。
 
 ## 8. 目标产物
 

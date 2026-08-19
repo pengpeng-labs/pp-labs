@@ -183,6 +183,41 @@
 - [ ] **A-4** BearSSL 交叉编译（aarch64）→ 网络栈验证
 - [ ] **A-5** RPi4 实机引导（8GB 内存利用依赖方案B）
 
+## Phase 18 — 语言演进（design.md §4 落地）
+
+> 规划见 `pplang/design.md`。目标：pplang = C 能力 + Rust 语法糖 + Zig 约束哲学 + Go/Python 可读性。分三层按优先级落地。
+
+### 第一层：基础语言件（纯糖，成本低）
+
+- [x] **L1-1** `true`/`false` 字面量（bool 成真一等公民）
+- [x] **L1-2** 数组语法 `[T; N]` → `[N]T`（长度前置，全仓库迁移）
+- [x] **L1-3** `for x in s` 遍历循环 + `range(n)` 整数序列
+- [x] **L1-4** `x in s` 成员判断（返回 bool）
+- [x] **L1-5** 函数指针调用 `fp()`
+- [x] **L1-6** struct 方法（纯糖，`p.method(x)` ≡ `method(p, x)`）
+
+### 第二层：指针 + 内存约束（核心）
+
+- [x] **L2-1** `str` 切片化（`{ptr, len}`，O(1) len，字面量带长）——str 表示 `{i64,i64}`（arm64 ABI）+ `str_ptr`/`str_len` 兼容层 + int_to_ptr 返回 str + 全仓库字符串适配 + `print/println` 按 len 打印
+- [x] **L2-2** 切片语法 `s[a:b]` + `len()` 内建（`s[a:]`/`s[:b]`/`s[:]` 齐全）
+- [x] **L2-3** 显式 allocator（`stdlib/alloc.pp`：宿主 = malloc/free；pp-os 用 kmalloc/kfree）
+- [x] **L2-4** `defer`（函数退出点 LIFO 执行）
+- [x] **L2-5** 显式判空（指针 `==`/`!=` 比较，`p == 0` 判空；`?*T` 类型可选后续）
+
+### 第三层：类型系统收敛
+
+- [x] **L3-1** 无隐式收窄（u64→u8/u16 字节级截断必须显式 `as`；int→u8 惯用收窄保留）
+- [x] **L3-2** 类型不匹配报错（int→bool 等隐式转换拒绝）
+- [x] **L3-3** 同名函数重定义报错（spec §7）
+
+### 附：spec §7 已知问题修复
+
+- [x] **S7-2** variadic extern（`extern fn printf(fmt: str, ...)`，`...` 语法，修 mode 丢失）
+- [x] **S7-3** 数组字面量（`let a: [4]int = [1, 2, 3, 4];`）
+- [x] **S7-cast** 显式 cast 语法（`x as u8`，int↔float/int↔指针/int 收窄拓宽）
+
+每步落地 + 回归 `pp ir/run/build/obj/os` + pp-os/pp-db 测试。
+
 ---
 
 ## 明确不做 / 边界

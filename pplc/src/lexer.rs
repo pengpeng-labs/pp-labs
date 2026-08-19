@@ -21,6 +21,12 @@ pub enum TokenKind {
     Struct,
     Import,
     Static,
+    True,
+    False,
+    For,
+    In,
+    As,
+    Defer,
 
     // 运算符
     Plus,
@@ -56,6 +62,7 @@ pub enum TokenKind {
     Semicolon,
     Colon,
     Dot,
+    Ellipsis,
     Arrow,
 
     Eof,
@@ -187,6 +194,12 @@ impl Lexer {
                 "struct" => TokenKind::Struct,
                 "import" => TokenKind::Import,
                 "static" => TokenKind::Static,
+                "true" => TokenKind::True,
+                "false" => TokenKind::False,
+                "for" => TokenKind::For,
+                "in" => TokenKind::In,
+                "as" => TokenKind::As,
+                "defer" => TokenKind::Defer,
                 _ => TokenKind::Ident(s),
             };
             return Ok(Token { kind, line, col });
@@ -431,7 +444,13 @@ impl Lexer {
             }
             '.' => {
                 self.advance();
-                TokenKind::Dot
+                if self.peek() == Some('.') && self.peek2() == Some('.') {
+                    self.advance();
+                    self.advance();
+                    TokenKind::Ellipsis
+                } else {
+                    TokenKind::Dot
+                }
             }
             other => {
                 return Err(format!("unexpected character '{}' at {}:{}", other, line, col));

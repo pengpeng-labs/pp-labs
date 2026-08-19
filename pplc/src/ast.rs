@@ -12,6 +12,7 @@ pub enum Type {
     U64,
     Array(Box<Type>, usize),
     Ptr(Box<Type>),
+    Fn(Vec<Type>, Box<Type>),
     Void,
     Named(String),
 }
@@ -35,6 +36,7 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    In,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,7 @@ pub enum UnOp {
 pub enum Expr {
     Int(i64),
     Float(f64),
+    Bool(bool),
     Str(String),
     Var(String),
     Binary {
@@ -74,6 +77,16 @@ pub enum Expr {
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+    },
+    Slice {
+        base: Box<Expr>,
+        lo: Option<Box<Expr>>,
+        hi: Option<Box<Expr>>,
+    },
+    ArrayLit(Vec<Expr>),
+    Cast {
+        expr: Box<Expr>,
+        ty: Type,
     },
     AddrOf(Box<Expr>),
     Deref(Box<Expr>),
@@ -105,6 +118,12 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
     },
+    For {
+        var: String,
+        iter: Expr,
+        body: Block,
+    },
+    Defer(Box<Expr>),
     Break,
     Continue,
 }
@@ -119,6 +138,7 @@ pub struct Prototype {
     pub name: String,
     pub params: Vec<(String, Type)>,
     pub ret: Type,
+    pub is_var_arg: bool,
 }
 
 #[derive(Debug, Clone)]
