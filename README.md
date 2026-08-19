@@ -42,7 +42,7 @@ pp-labs 是一个"面向系统软件的个人实验室"，每个产品独立发�
 
 ### 现状
 
-语言与编译器可用（`pp ir/run/build`），ppdb 独立分发测试全绿，ppos 在 QEMU 上跑通 app 模型 + MCP 工具；当前主线：uIP 1.0 胶水替换手写 TCP，解决 TLS 大响应健壮性。
+语言与编译器可用（`pp ir/run/build/obj/os`），语言三层演进（L1 语法糖 / L2 str 切片化 / L3 类型收敛）已落地；ppdb 独立分发测试全绿（含 `db ask`）；ppos 在 QEMU 上跑通 uIP 网络栈 + BearSSL TLS + DeepSeek agent。
 
 - 路线图（唯一台账）：[`docs/roadmap.md`](docs/roadmap.md)
 - 语言规范：[`pplang/spec.md`](pplang/spec.md)
@@ -67,4 +67,4 @@ See the table above. Core artifacts: `pplang/spec.md` (authoritative spec), `doc
 
 ### Status
 
-The compiler is usable (`pp ir/run/build`), ppdb passes its full test suite standalone, ppos boots in QEMU with the app model + MCP tools. Current mainline: replacing the hand-written TCP stack with a uIP 1.0 glue layer to fix TLS large-response robustness. See [`docs/roadmap.md`](docs/roadmap.md).
+The compiler is usable (`pp ir/run/build/obj/os`) with the three-layer language evolution (L1 syntax sugar / L2 str slicing / L3 type convergence) landed; ppdb passes its full test suite standalone (incl. `db ask`); ppos boots in QEMU with the uIP network stack + BearSSL TLS + DeepSeek agent. See [`docs/roadmap.md`](docs/roadmap.md).

@@ -8,13 +8,13 @@
 ## 1. 总体状态
 
 网络栈重构已收尾：**uIP 1.0 胶水端到端打通**（DNS → TCP → TLS → HTTPS → DeepSeek 工具调用，QEMU slirp 实测）。
-当前主线转入 pp-db 的 P15-1 收尾（SQL 层 + 多轮连接健壮性）。
+pp-db P15-1 收尾（SQL `SELECT *` + 多轮连接健壮性）与语言三层演进（L1/L2/L3）均已完成。
 
 | 线 | 状态 | 卡点 |
 |---|---|---|
 | 语言线（pp-lang 编译器） | ✅ 核心完成 | 无（地址模型 64 位化已解决） |
 | OS 线（pp-os） | ✅ 功能齐全，uIP 网络栈打通 | 无（手写 TCP 已归档） |
-| 数据库线（pp-db） | 🟡 P14 全完成，P15 进行中 | db ask 剩 SQL `SELECT *` + 多轮 TLS 健壮性 |
+| 数据库线（pp-db） | ✅ P14 全完成 + P15-1/P15-2 完成 | 无 |
 | 裸机线（T430/RPi4） | 🟢 刚启动（B-0/B-1 完成） | 等 db ask 收尾后切入 |
 
 ---
@@ -27,10 +27,7 @@
 - 命令：`pp ir / run / obj / os / build` 全可用
 - 语言能力：let/while/if/struct/import/extern/数组/指针/协程/volatile/u64
 - **方案B（地址模型 64 位化）已完成**：`ptr_to_int`→U64、调用/返回点 coerce、`volatile_load64/store64`、`&func` 去截断；宿主机静态数据 >4GB 无截断
-- **已知编译器问题**（记于 docs/spec.md §7）：
-  1. 同名函数重定义不报错（两个函数体编译进同一 LLVM 函数）
-  2. variadic extern 参数错位（open 的 mode 丢失）——用 fchmod 规避
-  3. 数组字面量 `[str;9]=[...]` 不支持——用辅助函数规避
+- **spec §7 已知编译器问题**：✅ 已全部修复（同名函数重定义报错、variadic extern `...` 语法、数组字面量）
 
 ### 2.2 OS 线（pp-os）— 功能齐全，uIP 网络栈打通
 
@@ -66,9 +63,8 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 - **独立分发（D-1~D-3）✅**：CLI（cli.pp）+ 真实文件持久化 + 测试套件（golden + 跨进程），全 PASS
 - P15-2 ✅：MCP 工具 sql/kv/doc
 
-进行中：
-- **P15-1 db ask**：网络链路已打通（uIP 集成后 DNS→TCP→TLS→HTTPS→DeepSeek tool_call 全通），
-  剩余两个收尾项：① SQL 解析器不支持 `SELECT *`（`*` 通配符）；② 第三轮工具调用偶发 `no https response`（多轮 TLS 连接健壮性）。
+已完成：
+- **P15-1 db ask**：网络链路 + SQL `SELECT *` + 多轮 TLS 连接健壮性全打通（DNS→TCP→TLS→HTTPS→DeepSeek tool_call 全通）。
 
 ### 2.4 裸机线 — 刚启动
 
@@ -77,7 +73,7 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 
 ---
 
-## 3. 当前卡点详解
+## 3. 卡点详解（均已解决）
 
 ### 卡点 1：uIP 测试 T4/T5（✅ 已解决）
 
@@ -100,11 +96,12 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 - uIP unix 示例依赖 Linux TAP 设备（/dev/net/tun），macOS 无
 - 解决：纯函数级测试（构造帧喂 uip_input，断言输出）→ 最终用 **QEMU slirp + 抓包（filter-dump）** 端到端验证，比纯函数测试更直接
 
-### 卡点 4（当前）：db ask 的 SQL 层 + 多轮连接
+### 卡点 4：db ask 的 SQL 层 + 多轮连接（✅ 已解决）
 
 - **现象 1**：DeepSeek 返回 `SELECT * FROM notes`，pp-db SQL 解析器报 `sql: syntax error`（`*` 通配符/星号列未支持）
 - **现象 2**：第三轮工具调用 `no https response`（多轮 TLS 连接偶发失败）
 - **归属**：均非网络栈（uIP 链路已通），属 pp-db SQL 解析器与 agent 多轮连接管理
+- **结局**：① `db_sql_parse.pp` 解析 `*` + `db_sql_exec.pp` 展开列占位 c0/c1/...；② `uip_glue.c` 每轮 connect 重置接收环形缓冲 `rxbuf_head/tail/full`（跨轮残留污染下一轮 TLS 记录 + 缓冲末尾 space 截断大响应）
 
 ---
 
@@ -124,20 +121,19 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 
 | 优先级 | 事项 | 适合谁 |
 |---|---|---|
-| 🔴 | db ask 收尾：SQL `SELECT *` 支持 + 多轮 TLS 连接健壮性（第三轮偶发 no https response） | 单人 |
 | 🟡 | P15-3 索引 + SELECT TO JSON（纯 pp-db，不依赖网络） | **可并行** |
 | 🟡 | T-1 VGA 控制台（不依赖网络栈） | **可并行** |
 | 🟡 | A-1 编译器 ARM 目标（独立于网络栈） | **可并行** |
 | 🟢 | P16-1 事务 / P16-2 Rust 对照 / P16-3 教程 | 可并行 |
 | 🟢 | 教程编写（P13-1~3，最后写） | 可并行 |
-| 📌 | **uIP 集成修复未提交**（`kernel.pp`/`net.pp`/`uip_glue.c` 共 3 文件） | 协同前必须解决 |
+| 📌 | ~~uIP 集成修复未提交~~（已提交 `4a05108`/`c8ea251`/`7a31bd5`） | 已解决 |
 
 ---
 
 ## 6. 协同开发建议
 
-1. **先提交 uIP 集成修复**：`ppos/kernel.pp`、`ppos/net.pp`、`ppos/boot/uip_glue.c` 共 3 个文件的 bug 修复未提交，建议尽快提交
-2. **可并行任务**：P15-3（索引）、T-1（VGA 控制台）、A-1（ARM 目标）都与 db ask 收尾无关，
+1. **uIP 集成修复已提交**（`4a05108`/`c8ea251`/`7a31bd5`）：语言三层演进、db ask 收尾、数组语法迁移均已入库
+2. **可并行任务**：P15-3（索引）、T-1（VGA 控制台）、A-1（ARM 目标）均可并行，
    可分配给不同人
-3. **单线程任务**：db ask 收尾（SQL `SELECT *` + 多轮连接健壮性）→ 完成后 P15-1 验收
+3. **单线程任务**：无（db ask 收尾已完成，P15-1 已验收）
 4. **文档现状**：roadmap.md 是任务台账，baremetal.md 是裸机设计，ppdb.md 是数据库设计

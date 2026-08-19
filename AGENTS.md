@@ -71,12 +71,12 @@ bash ppdb/tests/run_tests.sh [ppdb 二进制路径]   # 缺省会现场编译 cl
 
 ## 5. 当前进度（截至 2026-08）
 
-- **语言/编译器**：✅ 核心完成。`pp ir/run/build/obj/os` 全可用；类型含 `int/float/bool/u8~u64/struct/数组/指针/协程`；地址模型 64 位化（方案B）已落地。已知 3 个编译器问题记于 `pplang/spec.md` §7（同名函数重定义不报错、variadic extern 参数错位、数组字面量不支持）。
-- **pp-db**：✅ P14 全完成 + 独立分发（CLI + 真实文件持久化 + 测试全绿）+ P15-2（MCP sql/kv/doc 工具）。🟡 P15-1 `db ask` 网络链路已通，剩 SQL `SELECT *` 支持 + 多轮 TLS 连接健壮性。
+- **语言/编译器**：✅ 核心完成。`pp ir/run/build/obj/os` 全可用；类型含 `int/float/bool/u8~u64/struct/数组/指针/协程`；地址模型 64 位化（方案B）已落地；语言三层演进（L1 语法糖 / L2 str 切片化 / L3 类型收敛）已落地，spec §7 三个已知问题已修复。
+- **pp-db**：✅ P14 全完成 + 独立分发（CLI + 真实文件持久化 + 测试全绿）+ P15-1（`db ask`，含 SQL `SELECT *` 支持）+ P15-2（MCP sql/kv/doc 工具）。
 - **pp-os**：✅ 功能齐全（boot/中断/PIT/键盘/VGA+串口/内存 FS/shell/协程/app 模型/MCP/WASM/e1000/TLS(BearSSL)/DeepSeek agent）。✅ **uIP 1.0 胶水端到端打通**（手写 TCP 已归档；DNS→TCP→TLS→HTTPS→DeepSeek tool_call 全链路验证通过）。
 - **裸机**：🟢 刚启动。B-0/B-1（地址模型 64 位化 + QEMU 回归）完成；T430（T-1/T-2）与 RPi4（A-1~A-5）未开始。
 
-## 6. uIP 集成（✅ 已收尾）+ 当前卡点
+## 6. uIP 集成（✅ 已收尾）
 
 手写 TCP（`ppos/archive/net.pp`、`ppos/archive/tls.pp` 已归档）已由 **uIP 1.0 胶水**替换完成，端到端验证通过。集成期间修复 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 
@@ -89,13 +89,13 @@ bash ppdb/tests/run_tests.sh [ppdb 二进制路径]   # 缺省会现场编译 cl
 | 5 | `uip_glue.c` TCP | `uip_glue_send` 覆盖式缓冲丢 TLS 多记录 → 改累积 |
 | 6 | `uip_glue.c` TCP | 累积数据 > MSS 溢出 `uip_buf` → 按 MSS 分片 |
 
-**当前卡点（db ask 收尾）**：① pp-db SQL 解析器不支持 `SELECT *`（报 `sql: syntax error`）；② 第三轮工具调用偶发 `no https response`（多轮 TLS 连接健壮性）。详见 `docs/progress.md` §3 卡点4。
+**db ask 收尾（✅ 已解决）**：① SQL `SELECT *`（`db_sql_parse.pp` 解析 `*` 通配 + `db_sql_exec.pp` 展开列占位 c0/c1/...）；② 多轮 TLS 连接健壮性（`uip_glue.c` 每轮 connect 重置接收环形缓冲 `rxbuf_head/tail/full`）。详见 `docs/progress.md` §3 卡点4。
 
 ## 7. 还有什么没干（候选任务，取 `docs/roadmap.md` 未勾选项）
 
 按是否可并行归类：
 
-- **🔴 单线程（当前主线）**：db ask 收尾（P15-1）——SQL `SELECT *` 支持 + 多轮 TLS 连接健壮性（第三轮偶发 `no https response`）。
+- **🔴 单线程（当前主线）**：无——db ask 收尾（P15-1）已提交完成。
 - **🟡 可并行（不依赖网络栈）**：
   - P15-3：关系索引（`CREATE INDEX`，参考移植）+ `SELECT ... TO JSON`（纯 pp-db）。
   - T-1：VGA 文本控制台（串口双输出）+ GRUB 引导镜像（`gfxpayload=text`）。
@@ -107,7 +107,7 @@ bash ppdb/tests/run_tests.sh [ppdb 二进制路径]   # 缺省会现场编译 cl
   - P4-3：`pp` 单二进制工具链补全（`build/ir/obj/run/test`）。
   - P4-4 / P13-3：`stdlib.md`、`spec.md`、`design.md` 定稿对齐。
   - T-2 / A-2~A-5：真机部署（T430 legacy 引导 + 82579LM 网卡；RPi4 启动桩 + PL011/GIC/GENET 驱动 + BearSSL aarch64 交叉编译）。
-- **📌 注意**：`docs/progress.md` §5 提到的"代码全部未提交"已过时——仓库已重组并提交（`c6bf56f`）。但 **uIP 集成修复（`ppos/kernel.pp`、`ppos/net.pp`、`ppos/boot/uip_glue.c`）尚未提交**。
+- **📌 注意**：`docs/progress.md` §5 提到的"代码全部未提交"已过时——仓库已重组并提交；uIP 集成修复、语言三层演进、db ask 收尾均已提交（`4a05108` / `c8ea251` / `7a31bd5`）。
 
 ## 8. 关键事实 / 陷阱
 
@@ -115,5 +115,4 @@ bash ppdb/tests/run_tests.sh [ppdb 二进制路径]   # 缺省会现场编译 cl
 - **`third_party/` 只读**，不自造的部分（uIP、eggos、wasmi 参考）只参考/移植，不改动。
 - 索引（SkipList/B+树）、WASM 运行时、TCP 栈都是**参考现成实现移植简化**，不从头发明；存储内核/SQL 解析器/执行器等原理主线用 pp-lang 手写（见 `docs/ppdb.md` §2）。
 - pp-os 单地址空间、全部 ring0、无进程隔离，app = 协程 + 库（边界契约见 `docs/app-model.md`）。
-- 已知测试脚本 bug：`ppdb/tests/run_tests.sh` 第 16/19 行引用 `../compiler/target/debug/pp`，但编译器目录已更名 `pplc`（应为 `../pplc/target/debug/pp`）；不带参数运行时需注意。
 - pp-db 有 4 个 host 抽象文件（`host_ppos.pp` / `host_native.pp` / `host_file_ppos.pp` / `host_file_native.pp`）：宿主机宿主走真实文件（POSIX + fchmod），pp-os 宿主走内存页区 + fs_write_bin。
