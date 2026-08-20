@@ -37,19 +37,19 @@ pp os    <file> [-o out]   # 生成 freestanding x86_64 目标文件
 ## 当前支持的语言子集
 
 - 类型：`int`（i32）、`float`（f64）、`bool`、`str {ptr,len}`、`u8/u16/u32/u64`、`void`、
-  `struct`、数组 `[N]T`、指针 `*T`、函数指针、受限 tuple `(T1,T2)`
+  `struct`、Sum Type `enum`、数组 `[N]T`、指针 `*T`、函数指针、受限 tuple `(T1,T2)`
 - 表达式：整数/浮点/字符串字面量、变量、二元运算、一元 `- !`、函数调用、
   结构体构造/字段读写/指针接收者、数组下标、切片、显式 cast、函数与方法调用、tuple 值
 - 语句：`let`（类型推断 + 零初始化）、赋值（含 `*p = v`、`buf[i] = v`）、
-  `return`、表达式语句、严格 bool `if/else`/`while`、`for/in`、`defer`、tuple 解构
-- 顶层：`fn` 定义、`extern` 声明、`struct` 声明、`import "file.pp"`、`static` 全局变量
+  `return`、表达式语句、严格 bool `if/else`/`while`、`for/in`、`switch` 单层解构、`defer`、tuple 解构
+- 顶层：`fn` 定义、`extern` 声明、`struct`/`enum` 声明、`import "file.pp"`、`static` 全局变量
 - 内置：`print` / `println`（int/float/bool/str，单实参）；系统层 `volatile_store8/16/32`、
   `volatile_load8/16/32`、`outb`/`inb`、`cli`/`sti`/`hlt`、`int_to_ptr`/`ptr_to_int`
 
 `pp run`（JIT）自动用 dlsym 解析 extern 函数（如 `printf`/`puts`）。extern 可以接收 `str`，
 但不能返回缺少长度的 `str`；外部缓冲使用 `*u8`。
 
-尚未支持：`unsafe/asm`、ARM64 裸机目标、Sum Type、`pp test` 子命令等（见
+尚未支持：`unsafe/asm`、ARM64 裸机目标、复杂模式匹配、`pp test` 子命令等（见
 [`pplang/spec.md`](../pplang/spec.md) 与 [`docs/roadmap.md`](../docs/roadmap.md)）。
 
 ## 结构

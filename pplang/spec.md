@@ -9,7 +9,7 @@
 
 ## 2. 词法（Lexical）
 
-- 关键字：`fn` `let` `if` `else` `while` `for` `in` `return` `struct` `import` `extern` `static` `break` `continue` `true` `false` `as` `defer`（`unsafe` `asm` 纸上待实现）
+- 关键字：`fn` `let` `if` `else` `while` `for` `in` `return` `struct` `enum` `switch` `import` `extern` `static` `break` `continue` `true` `false` `as` `defer`（`unsafe` `asm` 纸上待实现）
 - 标识符：`[A-Za-z_][A-Za-z0-9_]*`
 - 字面量：整数 / 浮点 / 布尔 / 字符 / 字符串
 - 注释：`//` 行注释，`/* */` 块注释
@@ -21,23 +21,28 @@ TODO：补全精确 token 定义。
 
 ```ebnf
 program     = { decl } ;
-decl        = func_decl | struct_decl | import_decl | extern_decl | static_decl ;
+decl        = func_decl | struct_decl | enum_decl | import_decl | extern_decl | static_decl ;
 func_decl   = "fn" ident "(" [ params ] ")" [ "->" type ] block ;
 params      = param { "," param } [ "," "..." ] ;   (* 末尾 ... = variadic *)
 param       = ident ":" type ;
 struct_decl = "struct" ident "{" { field } "}" ;
+enum_decl   = "enum" ident "{" variant { "," variant } [ "," ] "}" ;
+variant     = ident [ "(" type ")" ] ;
 block       = "{" { stmt } "}" ;
-stmt        = let_stmt | if_stmt | while_stmt | for_stmt | defer_stmt | return_stmt | expr_stmt ;
+stmt        = let_stmt | if_stmt | while_stmt | for_stmt | switch_stmt
+            | defer_stmt | return_stmt | expr_stmt ;
 let_stmt    = "let" ( ident [ ":" type ] | "(" ident "," ident { "," ident } ")" )
               [ "=" expr ] ";" ;
 for_stmt    = "for" ident "in" expr block ;
 defer_stmt  = "defer" expr ";" ;                    (* 函数退出点 LIFO 执行 *)
+switch_stmt = "switch" expr "{" switch_arm { switch_arm } "}" ;
+switch_arm  = ( ident "." ident [ "(" ident ")" ] | "_" ) block ;
 type        = "int" | "float" | "bool" | "str" | "u8" | "u16" | "u32" | "u64"
             | "[" int "]" type               (* 定长数组 [N]T，长度前置 *)
             | "*" type                        (* 裸指针 *)
             | "fn" "(" [ types ] ")" [ "->" type ]   (* 函数指针 *)
             | "(" type "," type { "," type } ")"     (* tuple，至少两个元素 *)
-            | ident                          (* 结构体名 *)
+            | ident                          (* struct / enum 名 *)
             ;
 ```
 
@@ -56,11 +61,12 @@ call        = ident "(" [ args ] ")" ;                    (* len(x) 等内建 *)
 ## 4. 类型系统
 
 - 基础类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr, len}` 字节切片，字面量带长) `u8/u16/u32/u64`
-- 复合类型：`struct`（值语义）、`[N]T` 定长数组（长度前置 Go/Zig 式）、`fn(...) -> ret` 函数指针
+- 复合类型：`struct`（积类型、值语义）、`enum`（和类型、值语义）、`[N]T` 定长数组（长度前置 Go/Zig 式）、`fn(...) -> ret` 函数指针
 - tuple：`(T1,T2,...)`，用于值、函数返回与 `let (a,b) = f()` 解构；不支持嵌套解构/下标，extern 禁止 tuple
 - 系统层类型（§6）：`*T` 裸指针
 - 内建：`len(x)`（str 返回运行时长度 i64，数组返回编译期长度）；切片 `s[a:b]`/`s[a:]`/`s[:b]`/`s[:]` 产生新 `str` 视图
 - `str_from_ptr(ptr,len)` 从裸缓冲构造视图，`str_ptr(s)` 提取 `*u8`；二者都不转移或管理所有权
+- `enum` 变体可无 payload 或携带一个 payload；构造写 `Value.Int(1)` / `Value.None()`
 
 TODO：类型规则、隐式/显式转换、字面量类型。
 
@@ -85,6 +91,8 @@ TODO：类型规则、隐式/显式转换、字面量类型。
 - 求值顺序：表达式与函数实参从左到右求值（待增加更完整的规范示例）
 - 调用约定：内部 aggregate（`str`/struct/tuple）交给 LLVM 目标 ABI；extern `str` 参数降为指针，extern 不得返回无长度的 `str`
 - 切片：`0 <= lo <= hi <= len(s)`，违反边界时触发 trap
+- Sum Type：`switch` 的被匹配值必须是 `enum`；payload 只支持单层绑定。无 `_` 时必须覆盖所有变体；同一变体不得重复；`_` 最多一次且必须位于最后
+- Sum Type 布局：编译器为每个变体分配稳定的 `i32` tag，值表示为 `{tag, payload storage}`；`switch` 降为对 tag 的 LLVM switch，不引入运行时对象或 GC
 - 内存模型：核心子集栈 + 值语义；堆仅在 std-lib 提供显式 allocator
 
 ### 已知编译器问题（已修复）

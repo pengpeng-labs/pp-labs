@@ -71,6 +71,8 @@ impl Parser {
                 items.push(Item::Extern(proto));
             } else if self.eat(&TokenKind::Struct) {
                 items.push(Item::Struct(self.parse_struct_def()?));
+            } else if self.eat(&TokenKind::Enum) {
+                items.push(Item::Enum(self.parse_enum_def()?));
             } else if self.eat(&TokenKind::Import) {
                 let t = self.advance();
                 let path = match t.kind {
@@ -116,6 +118,32 @@ impl Parser {
             break;
         }
         Ok(StructDef { name, fields })
+    }
+
+    fn parse_enum_def(&mut self) -> Result<EnumDef, String> {
+        let name = self.expect_ident("enum name")?;
+        self.expect(&TokenKind::LBrace, "'{'")?;
+        let mut variants = Vec::new();
+        while !self.eat(&TokenKind::RBrace) {
+            let variant_name = self.expect_ident("enum variant name")?;
+            let payload = if self.eat(&TokenKind::LParen) {
+                let ty = self.parse_type()?;
+                self.expect(&TokenKind::RParen, "')' after enum payload type")?;
+                Some(ty)
+            } else {
+                None
+            };
+            variants.push(EnumVariant {
+                name: variant_name,
+                payload,
+            });
+            if self.eat(&TokenKind::Comma) {
+                continue;
+            }
+            self.expect(&TokenKind::RBrace, "'}' after enum variants")?;
+            break;
+        }
+        Ok(EnumDef { name, variants })
     }
 
     fn parse_prototype(&mut self) -> Result<Prototype, String> {
@@ -309,6 +337,7 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::For { var, iter, body })
             }
+            TokenKind::Switch => self.parse_switch(),
             TokenKind::Break => {
                 self.advance();
                 self.expect(&TokenKind::Semicolon, "';' after break")?;
@@ -383,6 +412,39 @@ impl Parser {
                 Ok(Stmt::Expr(e))
             }
         }
+    }
+
+    fn parse_switch(&mut self) -> Result<Stmt, String> {
+        self.expect(&TokenKind::Switch, "'switch'")?;
+        self.no_struct_init = true;
+        let expr = self.parse_expr()?;
+        self.no_struct_init = false;
+        self.expect(&TokenKind::LBrace, "'{' after switch value")?;
+        let mut arms = Vec::new();
+        while !self.eat(&TokenKind::RBrace) {
+            let first = self.expect_ident("switch pattern")?;
+            let pattern = if first == "_" {
+                SwitchPattern::Wildcard
+            } else {
+                self.expect(&TokenKind::Dot, "'.' in enum pattern")?;
+                let variant = self.expect_ident("enum variant")?;
+                let binding = if self.eat(&TokenKind::LParen) {
+                    let name = self.expect_ident("payload binding")?;
+                    self.expect(&TokenKind::RParen, "')' after payload binding")?;
+                    Some(name)
+                } else {
+                    None
+                };
+                SwitchPattern::Variant {
+                    enum_name: first,
+                    variant,
+                    binding,
+                }
+            };
+            let body = self.parse_block()?;
+            arms.push(SwitchArm { pattern, body });
+        }
+        Ok(Stmt::Switch { expr, arms })
     }
 
     fn peek_next(&self) -> &TokenKind {

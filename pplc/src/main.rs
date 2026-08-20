@@ -66,7 +66,7 @@ fn flush_stdout() {
     unsafe { fflush(std::ptr::null_mut()) };
 }
 
-/// 统一编译流程：struct 类型 → extern 声明 → 函数体。
+/// 统一编译流程：命名类型 → extern 声明 → 函数体。
 fn codegen<'ctx>(cg: &mut codegen::Codegen<'ctx>, items: &[ast::Item]) -> Result<(), String> {
     let struct_defs: Vec<&ast::StructDef> = items
         .iter()
@@ -75,7 +75,14 @@ fn codegen<'ctx>(cg: &mut codegen::Codegen<'ctx>, items: &[ast::Item]) -> Result
             _ => None,
         })
         .collect();
-    cg.declare_structs(&struct_defs)?;
+    let enum_defs: Vec<&ast::EnumDef> = items
+        .iter()
+        .filter_map(|i| match i {
+            ast::Item::Enum(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    cg.declare_types(&struct_defs, &enum_defs)?;
 
     for item in items {
         if let ast::Item::Extern(p) = item {

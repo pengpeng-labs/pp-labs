@@ -227,7 +227,7 @@
 - [x] **L4-4** 受限 tuple：类型/值/返回/`let (a,b)` 解构（无嵌套解构、无 extern tuple）
 - [x] **L4-5** `stdlib/buf.pp` 可增长字节缓冲
 - [x] **L4-6** `stdlib/strmap.pp`（FNV-1a + 开放寻址 + 扩容 + owned key/value）
-- [ ] **L5-1** Sum Type：`enum` + 精简 `switch` + 单层解构 + 穷尽性检查
+- [x] **L5-1** Sum Type：`enum` + 精简 `switch` + 单层解构 + 穷尽性检查（LLVM `{tag,payload}` + switch，构造/错误路径黑盒测试）
 
 每项验收：`cargo test` + `pp ir/run/build/obj/os` + pp-db golden/持久化 + pp-os 全量重建。
 

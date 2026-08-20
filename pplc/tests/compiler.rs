@@ -297,3 +297,209 @@ fn main() -> int {{
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "3\n");
 }
+
+#[test]
+fn sum_type_constructs_and_switches_all_variants() {
+    let output = pp(
+        "run",
+        "sum_type",
+        r#"
+enum Value { Int(int), Text(str), Flag(bool), None }
+
+fn score(value: Value) -> int {
+    let result: int = 0;
+    switch value {
+        Value.Int(number) { result = number; }
+        Value.Text(text) { result = len(text) as int; }
+        Value.Flag(flag) { if (flag) { result = 10; } }
+        Value.None { result = 1; }
+    }
+    return result;
+}
+
+fn main() -> int {
+    return score(Value.Int(7))
+        + score(Value.Text("abc"))
+        + score(Value.Flag(true))
+        + score(Value.None());
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "21\n");
+}
+
+#[test]
+fn sum_type_wildcard_is_a_fallback() {
+    let output = pp(
+        "run",
+        "sum_type_wildcard",
+        r#"
+enum Result { Ok(int), Error(str) }
+
+fn unwrap_or(result: Result) -> int {
+    switch result {
+        Result.Ok(value) { return value; }
+        _ { return -1; }
+    }
+    return 0;
+}
+
+fn main() -> int { return unwrap_or(Result.Error("no")); }
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "-1\n");
+}
+
+#[test]
+fn sum_type_switch_must_be_exhaustive() {
+    let output = pp(
+        "ir",
+        "sum_type_exhaustive",
+        r#"
+enum Value { Int(int), Text(str), None }
+fn score(value: Value) -> int {
+    switch value {
+        Value.Int(number) { return number; }
+        Value.None { return 0; }
+    }
+    return 0;
+}
+fn main() -> int { return 0; }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("non-exhaustive switch: missing Value.Text"));
+}
+
+#[test]
+fn sum_type_payload_type_is_checked() {
+    let output = pp(
+        "ir",
+        "sum_type_payload",
+        r#"
+enum Value { Int(int) }
+fn main() -> int { let value: Value = Value.Int("wrong"); return 0; }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("payload type mismatch for 'Value.Int'"));
+}
+
+#[test]
+fn sum_type_rejects_duplicate_switch_arms() {
+    let output = pp(
+        "ir",
+        "sum_type_duplicate",
+        r#"
+enum Value { Int(int), None }
+fn score(value: Value) -> int {
+    switch value {
+        Value.Int(first) { return first; }
+        Value.Int(second) { return second; }
+        Value.None { return 0; }
+    }
+    return 0;
+}
+fn main() -> int { return 0; }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("duplicate switch arm 'Value.Int'"));
+}
+
+#[test]
+fn sum_type_payload_pattern_requires_one_binding() {
+    let output = pp(
+        "ir",
+        "sum_type_binding",
+        r#"
+enum Value { Int(int), None }
+fn score(value: Value) -> int {
+    switch value {
+        Value.Int { return 1; }
+        Value.None { return 0; }
+    }
+    return 0;
+}
+fn main() -> int { return 0; }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("variant 'Value.Int' requires a payload binding"));
+}
+
+#[test]
+fn sum_type_unit_pattern_rejects_a_binding() {
+    let output = pp(
+        "ir",
+        "sum_type_unit_binding",
+        r#"
+enum Value { Int(int), None }
+fn score(value: Value) -> int {
+    switch value {
+        Value.Int(number) { return number; }
+        Value.None(unused) { return 0; }
+    }
+    return 0;
+}
+fn main() -> int { return 0; }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("variant 'Value.None' has no payload"));
+}
+
+#[test]
+fn sum_type_wildcard_must_be_last() {
+    let output = pp(
+        "ir",
+        "sum_type_wildcard_order",
+        r#"
+enum Value { Int(int), None }
+fn score(value: Value) -> int {
+    switch value {
+        _ { return 0; }
+        Value.Int(number) { return number; }
+    }
+    return 0;
+}
+fn main() -> int { return 0; }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("wildcard switch arm must be last"));
+}
+
+#[test]
+fn sum_type_can_carry_another_sum_type() {
+    let output = pp(
+        "run",
+        "nested_sum_type",
+        r#"
+enum Inner { Number(int), Empty }
+enum Outer { Wrapped(Inner), Missing }
+
+fn inner_score(value: Inner) -> int {
+    switch value {
+        Inner.Number(number) { return number; }
+        Inner.Empty { return 0; }
+    }
+    return 0;
+}
+
+fn outer_score(value: Outer) -> int {
+    switch value {
+        Outer.Wrapped(inner) { return inner_score(inner); }
+        Outer.Missing { return -1; }
+    }
+    return 0;
+}
+
+fn main() -> int { return outer_score(Outer.Wrapped(Inner.Number(9))); }
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "9\n");
+}

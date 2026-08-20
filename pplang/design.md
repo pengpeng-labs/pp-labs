@@ -22,10 +22,10 @@
 ## 3. 当前能力盘点（与 spec.md 对齐）
 
 **已有**：
-- 18 关键字：`fn extern if else return let while for in as defer break continue struct import static true false`
-- 类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr,len}`)、`u8/u16/u32/u64`、`struct`(值语义)、`[N]T`(长度前置)、`fn(...) -> ret`(函数指针)、`*T`、受限 tuple
-- 语句/表达式：`let`(推断+零初始化)、赋值(含 `*p=v`/`buf[i]=v`)、`return`、`if/else`、`while`、`for x in s` + `range(n)`、`defer`(退出点 LIFO)、`break/continue`、二元/一元运算、`x in s` 成员判断、显式 cast `x as T`、`struct` 构造+字段、方法糖 `p.m(x)`、下标、数组字面量 `[e,e,...]`、指针 `&x *p p[i] p+i`、指针判空 `p == 0`、函数指针调用 `fp()`
-- 顶层：`fn`、`extern`(含 variadic `...`)、`struct`、`import`、`static`
+- 20 关键字：`fn extern if else return let while for in as defer break continue struct enum switch import static true false`
+- 类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr,len}`)、`u8/u16/u32/u64`、`struct`(值语义)、`enum`(tagged union)、`[N]T`(长度前置)、`fn(...) -> ret`(函数指针)、`*T`、受限 tuple
+- 语句/表达式：`let`(推断+零初始化)、赋值(含 `*p=v`/`buf[i]=v`)、`return`、`if/else`、`while`、`for x in s` + `range(n)`、`switch`、`defer`(退出点 LIFO)、`break/continue`、二元/一元运算、`x in s` 成员判断、显式 cast `x as T`、`struct`/`enum` 构造、字段、方法糖 `p.m(x)`、下标、数组字面量 `[e,e,...]`、指针 `&x *p p[i] p+i`、指针判空 `p == 0`、函数指针调用 `fp()`
+- 顶层：`fn`、`extern`(含 variadic `...`)、`struct`、`enum`、`import`、`static`
 - 系统层内置：`print/println`、`volatile_load/store8/16/32/64`、`outb/inb/outl/inl`、`cli/sti/hlt`、`rdtsc`、`atomic_xchg`、`int_to_ptr/ptr_to_int`、`&func`(取址)
 - stdlib：`alloc.pp`(显式裸指针 alloc/dealloc)、`math.pp`、`string.pp`、`buf.pp`、`strmap.pp`
 
@@ -70,7 +70,7 @@
 | 类型不匹配报错 | 现在静默 coerce 藏隐患 | 编译错误 |
 | 同名函数重定义报错 | spec §7 已记录，补上 | 编译错误 |
 
-### 第四层：机制借鉴（候选未落地）
+### 第四层：机制借鉴
 
 > ⚠️ 候选（2026-08 讨论）。两条来源：Lua 的"少 feature，多 mechanism"（table + 元方法顶了数组/字典/对象/继承/运算符重载）；TAPL 的"低阶高价值"特性（sum type 是 record 的对偶，比泛型便宜一个数量级）。pp 只借思想，不抄语法与运行时。
 
@@ -79,13 +79,13 @@
 | 项 | 方案 | 成本 | 状态 |
 |----|------|------|------|
 | **多返回值** `(T1,T2)` | `fn f() -> (bool,int)` 使用 LLVM literal struct，支持 tuple 值与 `let (a,b)` 解构 | 编译器 + sema | ✅ v0.2 完成 |
-| **Sum Type** `enum` + 精简 `switch` | tag + payload + 穷尽性检查，见 §4.1 | 两个关键字 + tag 编号/穷尽性检查/跳转表，接近 record | ⚠️ 候选，**优先级高于泛型** |
+| **Sum Type** `enum` + 精简 `switch` | tag + payload + 穷尽性检查，见 §4.1 | 两个关键字 + tag 编号/穷尽性检查/跳转表，接近 record | ✅ v0.2 完成 |
 | **关联容器** `StrMap` | 标准库 FNV-1a + 开放寻址，键值都 `str`，见 §6.4 | 纯 `.pp` | ✅ v0.2 完成 |
 | **接口统一** | 先"软统一"（`map_get/has/set/del/free`）；硬统一需元方法/编译期分发 | 软=零 / 硬=高 | ✅ 软统一；硬统一远期 |
 
 - **依赖**：多返回值是 StrMap 的前置——`map_get` 无多返回值只能"空串当哨兵"，无法区分"值是空串"与"没找到"；`-> (bool, str)` 才无歧义。
 
-### 4.1 Sum Type / tagged union（TAPL/OCaml 启发，候选）
+### 4.1 Sum Type / tagged union（TAPL/OCaml 启发，已落地）
 
 ppdb 的 SQL/JSON/KV 值本质是"一个值可能是 int/str/float/bool"；现在只能用 `struct { tag: int, ... }` 手写，又丑又不安全（tag 和字段对不上没人管）。Sum type = 编译器自动维护 tag 的"或"类型，是 record 的对偶（TAPL 第 11 章），成本远低于泛型。
 
@@ -106,21 +106,21 @@ ppdb 的 SQL/JSON/KV 值本质是"一个值可能是 int/str/float/bool"；现�
 **语法形态**：
 
 ```
-enum Value { Int(int), Str(str), Float(float), Bool(bool) }
+enum Value { Int(int), Str(str), Bool(bool), None }
 
 fn value_to_int(v: Value) -> int {
     switch v {
         Value.Int(i)   { return i; }
         Value.Str(s)   { return str_len(s); }
-        Value.Float(f) { return f as int; }
-        Value.Bool(b)  { return if b { 1 } else { 0 }; }
-        _              { return 0; }
+        Value.Bool(b)  { if (b) { return 1; } else { return 0; } }
+        Value.None     { return 0; }
     }
 }
 ```
 
 - 保留四件 OCaml 血统：**穷尽性检查**（漏变体报错）、**单层解构**、**通配 `_`**、**编译期跳转表**。
 - 砍掉四件：多参数构造子、嵌套模式、守卫 `when`、完整 match。
+- 无 payload 变体构造写 `Value.None()`，匹配写 `Value.None`；通配 `_` 最多一次且必须放在最后。
 - 成本：`enum`/`switch` 两个关键字 + tag 编号 + 穷尽性检查 + 跳转表——接近 record，远低于泛型（不用 `[]T`、不用单态化）。
 - 历史定位：源自 ML（Robin Milner, 1973），经 OCaml/SML/Haskell 普及，现已是 Rust/Swift/TS/Kotlin/Python/Java 主流标配，仅 Go 缺失。
 

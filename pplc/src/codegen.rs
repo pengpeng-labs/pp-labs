@@ -1,6 +1,6 @@
 //! 代码生成：AST → LLVM IR（inkwell）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
@@ -29,6 +29,8 @@ pub struct Codegen<'ctx> {
     named_values: HashMap<String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
     struct_defs: HashMap<String, Vec<(String, Type)>>,
     struct_types: HashMap<String, StructType<'ctx>>,
+    enum_defs: HashMap<String, Vec<EnumVariant>>,
+    enum_types: HashMap<String, StructType<'ctx>>,
     globals: HashMap<String, (GlobalValue<'ctx>, BasicTypeEnum<'ctx>)>,
     var_types: HashMap<String, Type>,
     func_rets: HashMap<String, Type>,
@@ -55,6 +57,8 @@ impl<'ctx> Codegen<'ctx> {
             named_values: HashMap::new(),
             struct_defs: HashMap::new(),
             struct_types: HashMap::new(),
+            enum_defs: HashMap::new(),
+            enum_types: HashMap::new(),
             globals: HashMap::new(),
             var_types: HashMap::new(),
             func_rets: HashMap::new(),
@@ -70,16 +74,27 @@ impl<'ctx> Codegen<'ctx> {
         &self.module
     }
 
-    /// 注册所有 struct 类型（两阶段：先 opaque，再 set body，支持嵌套/递归）。
-    pub fn declare_structs(&mut self, defs: &[&StructDef]) -> Result<(), String> {
-        for def in defs {
+    /// 注册所有命名 aggregate：先声明 opaque 名称，再设置 struct/enum 布局。
+    pub fn declare_types(
+        &mut self,
+        struct_defs: &[&StructDef],
+        enum_defs: &[&EnumDef],
+    ) -> Result<(), String> {
+        for def in struct_defs {
             self.struct_defs.insert(def.name.clone(), def.fields.clone());
             self.struct_types.insert(
                 def.name.clone(),
                 self.context.opaque_struct_type(&def.name),
             );
         }
-        for def in defs {
+        for def in enum_defs {
+            self.enum_defs.insert(def.name.clone(), def.variants.clone());
+            self.enum_types.insert(
+                def.name.clone(),
+                self.context.opaque_struct_type(&def.name),
+            );
+        }
+        for def in struct_defs {
             let mut field_types: Vec<BasicTypeEnum<'ctx>> =
                 Vec::with_capacity(def.fields.len());
             for (_, t) in &def.fields {
@@ -88,7 +103,78 @@ impl<'ctx> Codegen<'ctx> {
             let st = self.struct_types[&def.name];
             st.set_body(&field_types, false);
         }
+        for def in enum_defs {
+            let mut payload_bytes = 0u64;
+            for variant in &def.variants {
+                if let Some(payload) = &variant.payload {
+                    let size = self.storage_size(payload).map_err(|error| {
+                        format!("enum payload '{}.{}': {}", def.name, variant.name, error)
+                    })?;
+                    payload_bytes = payload_bytes.max(size);
+                }
+            }
+            let slots = payload_bytes.max(1).div_ceil(8) as u32;
+            let payload = self.context.i64_type().array_type(slots);
+            self.enum_types[&def.name]
+                .set_body(&[self.context.i32_type().into(), payload.into()], false);
+        }
         Ok(())
+    }
+
+    /// enum payload 使用 i64 槽存储；这里计算保守上界，允许 padding。
+    fn storage_size(&self, ty: &Type) -> Result<u64, String> {
+        self.storage_size_inner(ty, &mut HashSet::new())
+    }
+
+    fn storage_size_inner(
+        &self,
+        ty: &Type,
+        visiting: &mut HashSet<String>,
+    ) -> Result<u64, String> {
+        let align8 = |size: u64| (size + 7) & !7;
+        match ty {
+            Type::Bool | Type::U8 => Ok(1),
+            Type::U16 => Ok(2),
+            Type::Int | Type::U32 => Ok(4),
+            Type::Float | Type::U64 | Type::Ptr(_) | Type::Fn(_, _) => Ok(8),
+            Type::Str => Ok(16),
+            Type::Array(element, len) => {
+                Ok(align8(self.storage_size_inner(element, visiting)?) * *len as u64)
+            }
+            Type::Tuple(elements) => {
+                let mut total = 0;
+                for element in elements {
+                    total += align8(self.storage_size_inner(element, visiting)?);
+                }
+                Ok(total)
+            }
+            Type::Named(name) => {
+                if !visiting.insert(name.clone()) {
+                    return Err(format!("recursive value type '{}' has no finite size", name));
+                }
+                let result = if let Some(variants) = self.enum_defs.get(name) {
+                    let mut payload_bytes = 0;
+                    for variant in variants {
+                        if let Some(payload) = &variant.payload {
+                            payload_bytes = payload_bytes
+                                .max(self.storage_size_inner(payload, visiting)?);
+                        }
+                    }
+                    Ok(8 + align8(payload_bytes.max(1)))
+                } else if let Some(fields) = self.struct_defs.get(name) {
+                    let mut total = 0;
+                    for (_, field) in fields {
+                        total += align8(self.storage_size_inner(field, visiting)?);
+                    }
+                    Ok(total)
+                } else {
+                    Err(format!("unknown sized type '{}'", name))
+                };
+                visiting.remove(name);
+                result
+            }
+            Type::Void => Err("void is not a value type".to_string()),
+        }
     }
 
     fn type_to_basic(&self, t: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
@@ -115,6 +201,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::Named(name) => self
                 .struct_types
                 .get(name)
+                .or_else(|| self.enum_types.get(name))
                 .copied()
                 .map(|s| s.into())
                 .ok_or_else(|| format!("unknown type '{}'", name)),
@@ -260,6 +347,7 @@ impl<'ctx> Codegen<'ctx> {
                 let st = self
                     .struct_types
                     .get(name)
+                    .or_else(|| self.enum_types.get(name))
                     .copied()
                     .ok_or_else(|| format!("unknown type '{}'", name))?;
                 Ok(st.const_zero().into())
@@ -529,6 +617,7 @@ impl<'ctx> Codegen<'ctx> {
                 let st = self
                     .struct_types
                     .get(name)
+                    .or_else(|| self.enum_types.get(name))
                     .copied()
                     .ok_or_else(|| format!("unknown type '{}'", name))?;
                 let z = st.const_zero();
@@ -631,6 +720,7 @@ impl<'ctx> Codegen<'ctx> {
             Stmt::If { cond, then, els } => self.compile_if(cond, then, els.as_ref())?,
             Stmt::While { cond, body } => self.compile_while(cond, body)?,
             Stmt::For { var, iter, body } => self.compile_for(var, iter, body)?,
+            Stmt::Switch { expr, arms } => self.compile_switch(expr, arms)?,
             Stmt::Defer(e) => {
                 self.defer_stack.push((**e).clone());
             }
@@ -874,6 +964,126 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         self.builder.position_at_end(after_bb);
+        Ok(())
+    }
+
+    fn compile_switch(&mut self, expr: &Expr, arms: &[SwitchArm]) -> Result<(), String> {
+        let enum_name = match self.typeof_expr(expr) {
+            Type::Named(name) if self.enum_defs.contains_key(&name) => name,
+            _ => return Err("switch requires an enum value".to_string()),
+        };
+        let enum_type = self.enum_types[&enum_name];
+        let variants = self.enum_defs[&enum_name].clone();
+        let value = match self.compile_expr(expr)? {
+            BasicValueEnum::StructValue(value) => value,
+            _ => return Err("switch requires an enum value".to_string()),
+        };
+        let storage = self.create_entry_alloca(enum_type.into(), "switchvalue")?;
+        b!(self.builder.build_store(storage, value));
+        let zero = self.context.i32_type().const_int(0, false);
+        let tag_index = self.context.i32_type().const_int(0, false);
+        let tag_ptr = b!(unsafe {
+            self.builder
+                .build_gep(enum_type, storage, &[zero, tag_index], "enumtagptr")
+        });
+        let tag = match b!(self
+            .builder
+            .build_load(self.context.i32_type(), tag_ptr, "enumtag"))
+        {
+            BasicValueEnum::IntValue(tag) => tag,
+            _ => return Err("enum tag must be int".to_string()),
+        };
+
+        let current = self.builder.get_insert_block().unwrap();
+        let function = current.get_parent().unwrap();
+        let merge = self.context.append_basic_block(function, "switchend");
+        let blocks: Vec<BasicBlock<'ctx>> = (0..arms.len())
+            .map(|index| {
+                self.context
+                    .append_basic_block(function, &format!("switcharm{}", index))
+            })
+            .collect();
+        let wildcard_index = arms
+            .iter()
+            .position(|arm| matches!(arm.pattern, SwitchPattern::Wildcard));
+        let invalid = wildcard_index
+            .map(|index| blocks[index])
+            .unwrap_or_else(|| self.context.append_basic_block(function, "switchinvalid"));
+        let mut cases = Vec::new();
+        for (index, arm) in arms.iter().enumerate() {
+            if let SwitchPattern::Variant { variant, .. } = &arm.pattern {
+                let tag_value = variants
+                    .iter()
+                    .position(|candidate| candidate.name == *variant)
+                    .ok_or_else(|| format!("unknown enum variant '{}.{}'", enum_name, variant))?;
+                cases.push((
+                    self.context
+                        .i32_type()
+                        .const_int(tag_value as u64, false),
+                    blocks[index],
+                ));
+            }
+        }
+        b!(self.builder.build_switch(tag, invalid, &cases));
+
+        if wildcard_index.is_none() {
+            self.builder.position_at_end(invalid);
+            let trap = self.module.get_function("llvm.trap").unwrap_or_else(|| {
+                let ty = self.context.void_type().fn_type(&[], false);
+                self.module.add_function("llvm.trap", ty, None)
+            });
+            b!(self.builder.build_call(trap, &[], "trap"));
+            b!(self.builder.build_unreachable());
+        }
+
+        for (index, arm) in arms.iter().enumerate() {
+            self.builder.position_at_end(blocks[index]);
+            let saved_values = self.named_values.clone();
+            let saved_types = self.var_types.clone();
+            if let SwitchPattern::Variant {
+                variant,
+                binding: Some(binding),
+                ..
+            } = &arm.pattern
+            {
+                let payload = variants
+                    .iter()
+                    .find(|candidate| candidate.name == *variant)
+                    .and_then(|variant| variant.payload.as_ref())
+                    .ok_or_else(|| format!("variant '{}.{}' has no payload", enum_name, variant))?;
+                let payload_ty = self.type_to_basic(payload)?;
+                let payload_index = self.context.i32_type().const_int(1, false);
+                let payload_ptr = b!(unsafe {
+                    self.builder.build_gep(
+                        enum_type,
+                        storage,
+                        &[zero, payload_index],
+                        "enumpayloadptr",
+                    )
+                });
+                let payload_value = b!(self
+                    .builder
+                    .build_load(payload_ty, payload_ptr, "enumpayload"));
+                let alloca = self.create_entry_alloca(payload_ty, binding)?;
+                b!(self.builder.build_store(alloca, payload_value));
+                self.named_values
+                    .insert(binding.clone(), (alloca, payload_ty));
+                self.var_types.insert(binding.clone(), payload.clone());
+            }
+            for statement in &arm.body.stmts {
+                self.compile_stmt(statement)?;
+            }
+            self.named_values = saved_values;
+            self.var_types = saved_types;
+            if self
+                .builder
+                .get_insert_block()
+                .is_some_and(|block| block.get_terminator().is_none())
+            {
+                b!(self.builder.build_unconditional_branch(merge));
+            }
+        }
+        self.builder.position_at_end(merge);
         Ok(())
     }
 
@@ -1203,6 +1413,54 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    fn compile_enum_init(
+        &self,
+        enum_name: &str,
+        variant_name: &str,
+        args: &[Expr],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let variants = self
+            .enum_defs
+            .get(enum_name)
+            .ok_or_else(|| format!("unknown enum '{}'", enum_name))?;
+        let tag = variants
+            .iter()
+            .position(|variant| variant.name == variant_name)
+            .ok_or_else(|| format!("enum '{}' has no variant '{}'", enum_name, variant_name))?;
+        let variant = &variants[tag];
+        let enum_type = self.enum_types[enum_name];
+        let storage = self.create_entry_alloca(enum_type.into(), "enumvalue")?;
+        b!(self
+            .builder
+            .build_store(storage, enum_type.const_zero()));
+        let zero = self.context.i32_type().const_int(0, false);
+        let tag_index = self.context.i32_type().const_int(0, false);
+        let tag_ptr = b!(unsafe {
+            self.builder
+                .build_gep(enum_type, storage, &[zero, tag_index], "enumtagptr")
+        });
+        b!(self.builder.build_store(
+            tag_ptr,
+            self.context.i32_type().const_int(tag as u64, false)
+        ));
+        if let Some(payload) = &variant.payload {
+            let payload_value = self.compile_expr(&args[0])?;
+            let payload_ty = self.type_to_basic(payload)?;
+            let payload_index = self.context.i32_type().const_int(1, false);
+            let payload_ptr = b!(unsafe {
+                self.builder.build_gep(
+                    enum_type,
+                    storage,
+                    &[zero, payload_index],
+                    "enumpayloadptr",
+                )
+            });
+            let payload_value = self.coerce(payload_value, payload_ty)?;
+            b!(self.builder.build_store(payload_ptr, payload_value));
+        }
+        Ok(b!(self.builder.build_load(enum_type, storage, "enumvalue")))
+    }
+
     // ---------------------------------------------------------------
     // 表达式
     // ---------------------------------------------------------------
@@ -1325,6 +1583,11 @@ impl<'ctx> Codegen<'ctx> {
                 method,
                 args,
             } => {
+                if let Expr::Var(enum_name) = receiver.as_ref() {
+                    if self.enum_defs.contains_key(enum_name) {
+                        return self.compile_enum_init(enum_name, method, args);
+                    }
+                }
                 let params = self
                     .func_params
                     .get(method)
@@ -1621,8 +1884,24 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 }
             },
-            Expr::MethodCall { method, .. } => {
-                self.func_rets.get(method).cloned().unwrap_or(Type::Int)
+            Expr::MethodCall {
+                receiver, method, ..
+            } => {
+                if let Expr::Var(enum_name) = receiver.as_ref() {
+                    if self
+                        .enum_defs
+                        .get(enum_name)
+                        .is_some_and(|variants| {
+                            variants.iter().any(|variant| variant.name == *method)
+                        })
+                    {
+                        Type::Named(enum_name.clone())
+                    } else {
+                        self.func_rets.get(method).cloned().unwrap_or(Type::Int)
+                    }
+                } else {
+                    self.func_rets.get(method).cloned().unwrap_or(Type::Int)
+                }
             }
             _ => Type::Int,
         }

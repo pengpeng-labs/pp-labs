@@ -134,6 +134,10 @@ pub enum Stmt {
         iter: Expr,
         body: Block,
     },
+    Switch {
+        expr: Expr,
+        arms: Vec<SwitchArm>,
+    },
     Defer(Box<Expr>),
     Break,
     Continue,
@@ -165,6 +169,34 @@ pub struct StructDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub payload: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SwitchPattern {
+    Variant {
+        enum_name: String,
+        variant: String,
+        binding: Option<String>,
+    },
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchArm {
+    pub pattern: SwitchPattern,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone)]
 pub struct Static {
     pub name: String,
     pub ty: Type,
@@ -176,6 +208,7 @@ pub enum Item {
     Extern(Prototype),
     Function(Function),
     Struct(StructDef),
+    Enum(EnumDef),
     Import(String),
     Static(Static),
 }

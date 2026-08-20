@@ -1,6 +1,6 @@
 //! 小型语义分析：在 LLVM codegen 前检查名字、作用域和基础类型规则。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 
@@ -13,18 +13,40 @@ struct FunctionSig {
 
 pub fn check_program(items: &[Item]) -> Result<(), String> {
     let mut structs = HashMap::new();
+    let mut enums: HashMap<String, Vec<EnumVariant>> = HashMap::new();
     let mut functions: HashMap<String, FunctionSig> = HashMap::new();
     let mut globals = HashMap::new();
 
     for item in items {
         match item {
             Item::Struct(def) => {
+                if enums.contains_key(&def.name) {
+                    return Err(format!("type '{}' is already defined", def.name));
+                }
                 if structs
                     .insert(def.name.clone(), def.fields.clone())
                     .is_some()
                 {
                     return Err(format!("duplicate struct definition '{}'", def.name));
                 }
+            }
+            Item::Enum(def) => {
+                if structs.contains_key(&def.name) || enums.contains_key(&def.name) {
+                    return Err(format!("type '{}' is already defined", def.name));
+                }
+                if def.variants.is_empty() {
+                    return Err(format!("enum '{}' requires at least one variant", def.name));
+                }
+                let mut names = HashSet::new();
+                for variant in &def.variants {
+                    if !names.insert(variant.name.clone()) {
+                        return Err(format!(
+                            "duplicate enum variant '{}.{}'",
+                            def.name, variant.name
+                        ));
+                    }
+                }
+                enums.insert(def.name.clone(), def.variants.clone());
             }
             Item::Extern(proto) | Item::Function(Function { proto, .. }) => {
                 if matches!(item, Item::Extern(_))
@@ -69,52 +91,66 @@ pub fn check_program(items: &[Item]) -> Result<(), String> {
 
     for fields in structs.values() {
         for (_, ty) in fields {
-            check_type(ty, &structs)?;
+            check_type(ty, &structs, &enums)?;
+        }
+    }
+    for variants in enums.values() {
+        for variant in variants {
+            if let Some(payload) = &variant.payload {
+                check_type(payload, &structs, &enums)?;
+            }
         }
     }
     for sig in functions.values() {
         for ty in &sig.params {
-            check_type(ty, &structs)?;
+            check_type(ty, &structs, &enums)?;
         }
-        check_type(&sig.ret, &structs)?;
+        check_type(&sig.ret, &structs, &enums)?;
     }
     for ty in globals.values() {
-        check_type(ty, &structs)?;
+        check_type(ty, &structs, &enums)?;
     }
 
     for item in items {
         if let Item::Function(function) = item {
-            Checker::new(&structs, &functions, &globals).check_function(function)?;
+            Checker::new(&structs, &enums, &functions, &globals).check_function(function)?;
         }
     }
     Ok(())
 }
 
-fn check_type(ty: &Type, structs: &HashMap<String, Vec<(String, Type)>>) -> Result<(), String> {
+fn check_type(
+    ty: &Type,
+    structs: &HashMap<String, Vec<(String, Type)>>,
+    enums: &HashMap<String, Vec<EnumVariant>>,
+) -> Result<(), String> {
     match ty {
-        Type::Array(inner, _) | Type::Ptr(inner) => check_type(inner, structs),
+        Type::Array(inner, _) | Type::Ptr(inner) => check_type(inner, structs, enums),
         Type::Tuple(elements) => {
             if elements.len() < 2 {
                 return Err("tuple type requires at least two elements".to_string());
             }
             for element in elements {
-                check_type(element, structs)?;
+                check_type(element, structs, enums)?;
             }
             Ok(())
         }
         Type::Fn(params, ret) => {
             for param in params {
-                check_type(param, structs)?;
+                check_type(param, structs, enums)?;
             }
-            check_type(ret, structs)
+            check_type(ret, structs, enums)
         }
-        Type::Named(name) if !structs.contains_key(name) => Err(format!("unknown type '{}'", name)),
+        Type::Named(name) if !structs.contains_key(name) && !enums.contains_key(name) => {
+            Err(format!("unknown type '{}'", name))
+        }
         _ => Ok(()),
     }
 }
 
 struct Checker<'a> {
     structs: &'a HashMap<String, Vec<(String, Type)>>,
+    enums: &'a HashMap<String, Vec<EnumVariant>>,
     functions: &'a HashMap<String, FunctionSig>,
     globals: &'a HashMap<String, Type>,
     scopes: Vec<HashMap<String, Type>>,
@@ -125,11 +161,13 @@ struct Checker<'a> {
 impl<'a> Checker<'a> {
     fn new(
         structs: &'a HashMap<String, Vec<(String, Type)>>,
+        enums: &'a HashMap<String, Vec<EnumVariant>>,
         functions: &'a HashMap<String, FunctionSig>,
         globals: &'a HashMap<String, Type>,
     ) -> Self {
         Self {
             structs,
+            enums,
             functions,
             globals,
             scopes: Vec::new(),
@@ -273,11 +311,93 @@ impl<'a> Checker<'a> {
                 self.scopes.pop();
                 result
             }
+            Stmt::Switch { expr, arms } => self.check_switch(expr, arms),
             Stmt::Break | Stmt::Continue if self.loop_depth == 0 => {
                 Err("loop control outside loop".to_string())
             }
             Stmt::Break | Stmt::Continue => Ok(()),
         }
+    }
+
+    fn check_switch(&mut self, expr: &Expr, arms: &[SwitchArm]) -> Result<(), String> {
+        let enum_name = match self.expr_type(expr)? {
+            Type::Named(name) if self.enums.contains_key(&name) => name,
+            other => return Err(format!("switch requires an enum value, got {:?}", other)),
+        };
+        let variants = self.enums[&enum_name].clone();
+        let mut seen = HashSet::new();
+        let mut wildcard = false;
+
+        for (index, arm) in arms.iter().enumerate() {
+            self.scopes.push(HashMap::new());
+            let result = (|| match &arm.pattern {
+                SwitchPattern::Wildcard => {
+                    if wildcard {
+                        Err("duplicate wildcard switch arm".to_string())
+                    } else if index + 1 != arms.len() {
+                        Err("wildcard switch arm must be last".to_string())
+                    } else {
+                        wildcard = true;
+                        self.check_statements(&arm.body.stmts, false)
+                    }
+                }
+                SwitchPattern::Variant {
+                    enum_name: pattern_enum,
+                    variant,
+                    binding,
+                } => {
+                    if pattern_enum != &enum_name {
+                        Err(format!(
+                            "switch pattern '{}.{}' does not match enum '{}'",
+                            pattern_enum, variant, enum_name
+                        ))
+                    } else if !seen.insert(variant.clone()) {
+                        Err(format!("duplicate switch arm '{}.{}'", enum_name, variant))
+                    } else {
+                        let definition = variants
+                            .iter()
+                            .find(|candidate| candidate.name == *variant)
+                            .ok_or_else(|| {
+                                format!("enum '{}' has no variant '{}'", enum_name, variant)
+                            })?;
+                        match (&definition.payload, binding) {
+                            (Some(payload), Some(name)) => self.declare(name, payload.clone())?,
+                            (Some(_), None) => {
+                                return Err(format!(
+                                    "variant '{}.{}' requires a payload binding",
+                                    enum_name, variant
+                                ));
+                            }
+                            (None, Some(_)) => {
+                                return Err(format!(
+                                    "variant '{}.{}' has no payload",
+                                    enum_name, variant
+                                ));
+                            }
+                            (None, None) => {}
+                        }
+                        self.check_statements(&arm.body.stmts, false)
+                    }
+                }
+            })();
+            self.scopes.pop();
+            result?;
+        }
+
+        if !wildcard {
+            let missing: Vec<String> = variants
+                .iter()
+                .filter(|variant| !seen.contains(&variant.name))
+                .map(|variant| format!("{}.{}", enum_name, variant.name))
+                .collect();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "non-exhaustive switch: missing {}",
+                    missing.join(", ")
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn require_bool(&mut self, expr: &Expr) -> Result<(), String> {
@@ -325,6 +445,42 @@ impl<'a> Checker<'a> {
                 method,
                 args,
             } => {
+                if let Expr::Var(enum_name) = receiver.as_ref() {
+                    if let Some(variants) = self.enums.get(enum_name) {
+                        let variant = variants
+                            .iter()
+                            .find(|candidate| candidate.name == *method)
+                            .ok_or_else(|| {
+                                format!("enum '{}' has no variant '{}'", enum_name, method)
+                            })?
+                            .clone();
+                        match (&variant.payload, args.as_slice()) {
+                            (None, []) => return Ok(Type::Named(enum_name.clone())),
+                            (Some(expected), [value]) => {
+                                let actual = self.expr_type(value)?;
+                                if assignable(&actual, expected) {
+                                    return Ok(Type::Named(enum_name.clone()));
+                                }
+                                return Err(format!(
+                                    "payload type mismatch for '{}.{}': {:?} to {:?}",
+                                    enum_name, method, actual, expected
+                                ));
+                            }
+                            (None, _) => {
+                                return Err(format!(
+                                    "variant '{}.{}' takes no payload",
+                                    enum_name, method
+                                ));
+                            }
+                            (Some(_), _) => {
+                                return Err(format!(
+                                    "variant '{}.{}' takes exactly one payload",
+                                    enum_name, method
+                                ));
+                            }
+                        }
+                    }
+                }
                 let sig = self
                     .functions
                     .get(method)
