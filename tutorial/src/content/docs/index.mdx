@@ -1,0 +1,36 @@
+---
+title: pp-labs 教程
+description: 一门语言、一个编译器、一个数据库和一个操作系统。
+template: splash
+hero:
+  title: pp-labs
+  tagline: 从一门能装进脑子的系统语言，走到编译器、数据库与操作系统。
+  actions:
+    - text: 开始学习 pplang v0.3
+      link: /xlc-lang/pplang/v0-3/
+      icon: right-arrow
+      variant: primary
+    - text: 查看语言规范
+      link: /xlc-lang/pplang/v0-3/reference/specification/
+      icon: document
+      variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="pplang" icon="seti:config">
+    学习 pp-lang v0.3 的来源、设计、完整语言能力和精确语义。当前教程主线。
+  </Card>
+  <Card title="pplc" icon="seti:rust">
+    从 token、AST 和语义分析，走到泛型单态化与 LLVM IR。规划中。
+  </Card>
+  <Card title="ppdb" icon="database">
+    用 pp 实现 SQL、KV、Doc、持久化与 Agent 数据层。规划中。
+  </Card>
+  <Card title="ppos" icon="setting">
+    从启动、中断和内存走到网络、TLS、WASM 与 unikernel app。规划中。
+  </Card>
+</CardGrid>
+
+四套教程共享代码仓库和术语，但不重复职责。pplang 定义语言；pplc 解释实现；ppdb 与 ppos 展示它在真实系统中的使用。

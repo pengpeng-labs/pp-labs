@@ -1,6 +1,6 @@
 # pp-lang 路线图
 
-> pp-lang 的三位一体：**一门语言** + **两个教程**（语言 / OS）+ **一个 demo（pp-os）**。
+> pp-labs 围绕 pp-lang 组织四套教程：**pplang 语言**、**pplc 编译器**、**ppdb 数据库**、**ppos 操作系统**。
 > 两条主线：**教学友好** + **LLM 友好**。
 > 本文件是唯一的任务台账，阶段推进时在此勾选。
 
@@ -109,11 +109,18 @@
 - [ ] **P12-3** CLI 浏览器（HTTP + 文本渲染）
 - [ ] **P12-4** WASM 运行时（移植/写最小核心解释器，供"装程序"）
 
-## Phase 13 — 教程（最后写）
+## Phase 13 — 四套教程
 
-- [ ] **P13-1** `tutorial/lang`：lexer → parser → codegen 开发日志（P2-3、P3-6 合并）
-- [ ] **P13-2** `tutorial/os`：boot → 中断 → shell → 协程（P5-4、P6-6 合并）
-- [ ] **P13-3** `docs/spec.md`、`docs/stdlib.md`、`docs/design.md` 定稿对齐
+> 同一个 Starlight 站点承载四套教程。当前里程碑只交付 pplang v0.3；pplc、ppdb、ppos 保留入口与后续任务。
+
+- [x] **P13-0** Starlight 文档地基：中文主语言、英文回退、四教程导航、全文搜索、GitHub Pages 构建
+- [x] **P13-1** pplang v0.3 来源与设计篇：真实需求、语言借鉴、设计取舍、版本演进
+- [x] **P13-2** pplang v0.3 使用教程：从第一个程序到 Sum Type、显式泛型与系统边界
+- [x] **P13-3** pplang v0.3 参考手册：词法、语法、类型、语义、ABI、CLI，并与 `pplang/spec.md` 对齐
+- [ ] **P13-4** pplc 教程：lexer → parser → sema → monomorphization → LLVM codegen（合并 P2-3、P3-6）
+- [ ] **P13-5** ppdb 教程：存储 → SQL → KV/Doc → 持久化 → Agent
+- [ ] **P13-6** ppos 教程：boot → 中断 → shell → 协程 → 网络 → app（合并 P5-4、P6-6）
+- [ ] **P13-7** 英文内容逐篇补齐；中文稳定内容为缺失翻译的回退来源
 
 ## Phase 13.5 — App 模型：内核有边界（"程序 = 协程 + 库"落地）
 
@@ -243,7 +250,7 @@
 - [x] **G2-2** 泛型 struct 构造、enum 构造与 Sum Type 穷尽检查
 - [x] **G2-3** 嵌套实例（如 `Option[Vec[int]]`）与实例布局去重
 - [x] **G2-4** `sizeof[T]()` / `alignof[T]()` 编译期整数内建
-- [x] **G3-1** v0.3 spec/design 定稿 + 泛型正反例 + 全仓库回归（compiler 35/35、pp-db PASS、pp-os 全量重建）
+- [x] **G3-1** v0.3 spec/design 定稿 + 泛型正反例 + 全仓库回归（compiler 36/36、pp-db PASS、pp-os 全量重建）
 
 边界：不做类型参数推导、trait/interface、类型集合、约束求解、specialization、comptime、泛型 extern ABI。
 

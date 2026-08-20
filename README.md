@@ -20,7 +20,7 @@ pp-labs 是一个"面向系统软件的个人实验室"，每个产品独立发�
 | **pplc** | pp 编译器：`.pp` → LLVM IR → 可执行 / JIT / 裸机 ELF | `pplc/` |
 | **ppdb** | 用 `.pp` 写的小型嵌入式数据库（SQL/KV/Doc 多模型，可独立分发） | `ppdb/` |
 | **ppos** | 用 `.pp` 自己写的迷你 unikernel（ppdb 的宿主与展示场景） | `ppos/` |
-| **教程** | lang/（编译原理 + 语言本身）+ os/（boot → shell 的 OS 原理） | `tutorial/` |
+| **教程** | Starlight 文档站：pplang / pplc / ppdb / ppos 四套教程 | `tutorial/` |
 
 两条主线贯穿始终：**教学友好** + **LLM 友好**。
 
@@ -35,7 +35,7 @@ pp-labs 是一个"面向系统软件的个人实验室"，每个产品独立发�
 ├── examples/      # 可运行的 .pp 示例
 ├── ppdb/          # 嵌入式数据库（db_core / sql / kv / doc / cli + tests）
 ├── ppos/          # freestanding unikernel（net / tls / fs / json / mcp / wasm …）
-├── tutorial/      # lang/（语言教程）+ os/（OS 教程）
+├── tutorial/      # Starlight：pplang / pplc / ppdb / ppos 四套教程
 ├── tools/         # 工具脚本（ppdb-ref 等）
 └── third_party/   # 只读第三方参考：uip-1.0/（网络栈）、eggos/（unikernel 参考）
 ```
@@ -67,4 +67,4 @@ See the table above. Core artifacts: `pplang/spec.md` (authoritative spec), `doc
 
 ### Status
 
-The compiler is usable (`pp ir/run/build/obj/os`) with the three-layer language evolution (L1 syntax sugar / L2 str slicing / L3 type convergence) landed; ppdb passes its full test suite standalone (incl. `db ask`); ppos boots in QEMU with the uIP network stack + BearSSL TLS + DeepSeek agent. See [`docs/roadmap.md`](docs/roadmap.md).
+The compiler is usable (`pp ir/run/build/obj/os`) with the three-layer language evolution (L1 syntax sugar / L2 str slicing / L3 type convergence) landed; ppdb passes its full test suite standalone (incl. `db ask`); ppos boots in QEMU with the uIP network stack + BearSSL TLS + DeepSeek agent. The Starlight site in `tutorial/` hosts four tutorial tracks. See [`docs/roadmap.md`](docs/roadmap.md).

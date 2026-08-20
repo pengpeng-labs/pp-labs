@@ -1213,20 +1213,18 @@ impl<'ctx> Codegen<'ctx> {
     fn compile_in_str(&self, lhs: &Expr, rhs: &Expr) -> Result<BasicValueEnum<'ctx>, String> {
         let lhs_val = self.compile_expr(lhs)?;
         let s_val = self.compile_expr(rhs)?;
-        let s_ptr = match s_val {
-            BasicValueEnum::PointerValue(p) => p,
-            _ => return Err("'in' with string requires a string pointer".to_string()),
-        };
+        let s_ptr = self.str_ptr(s_val)?;
+        let s_len = self.str_len(s_val)?;
 
         let i8_ty = self.context.i8_type();
         let bool_ty = self.context.bool_type();
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let i64_ty = self.context.i64_type();
         let result = b!(self.builder.build_alloca(bool_ty, "inresult"));
         b!(self
             .builder
             .build_store(result, bool_ty.const_int(0, false)));
-        let p_alloca = b!(self.builder.build_alloca(ptr_ty, "inp"));
-        b!(self.builder.build_store(p_alloca, s_ptr));
+        let i_alloca = b!(self.builder.build_alloca(i64_ty, "ini"));
+        b!(self.builder.build_store(i_alloca, i64_ty.const_zero()));
 
         let parent = self.builder.get_insert_block().unwrap();
         let function = parent.get_parent().unwrap();
@@ -1236,20 +1234,16 @@ impl<'ctx> Codegen<'ctx> {
 
         b!(self.builder.build_unconditional_branch(cond_bb));
 
-        // cond: *p != 0
+        // A str is a byte slice, so membership must stop at len rather than NUL.
         self.builder.position_at_end(cond_bb);
-        let p = match b!(self.builder.build_load(ptr_ty, p_alloca, "inp")) {
-            BasicValueEnum::PointerValue(p) => p,
-            _ => return Err("string pointer expected".to_string()),
-        };
-        let c = match b!(self.builder.build_load(i8_ty, p, "inc")) {
-            BasicValueEnum::IntValue(iv) => iv,
-            _ => return Err("string char must be int".to_string()),
+        let i = match b!(self.builder.build_load(i64_ty, i_alloca, "ini")) {
+            BasicValueEnum::IntValue(i) => i,
+            _ => return Err("string index must be int".to_string()),
         };
         let cond = b!(self.builder.build_int_compare(
-            IntPredicate::NE,
-            c,
-            i8_ty.const_int(0, false),
+            IntPredicate::ULT,
+            i,
+            s_len,
             "instrcmp"
         ));
         b!(self
@@ -1258,10 +1252,11 @@ impl<'ctx> Codegen<'ctx> {
 
         // body: if *p == x { result = true; goto done }
         self.builder.position_at_end(body_bb);
-        let p = match b!(self.builder.build_load(ptr_ty, p_alloca, "inp")) {
-            BasicValueEnum::PointerValue(p) => p,
-            _ => return Err("string pointer expected".to_string()),
+        let i = match b!(self.builder.build_load(i64_ty, i_alloca, "ini")) {
+            BasicValueEnum::IntValue(i) => i,
+            _ => return Err("string index must be int".to_string()),
         };
+        let p = b!(unsafe { self.builder.build_gep(i8_ty, s_ptr, &[i], "inptr") });
         let c = match b!(self.builder.build_load(i8_ty, p, "inc")) {
             BasicValueEnum::IntValue(iv) => iv,
             _ => return Err("string char must be int".to_string()),
@@ -1283,15 +1278,16 @@ impl<'ctx> Codegen<'ctx> {
             .build_store(result, bool_ty.const_int(1, false)));
         b!(self.builder.build_unconditional_branch(done_bb));
 
-        // nomatch: p++
+        // nomatch: i++
         self.builder.position_at_end(nomatch_bb);
-        let p = match b!(self.builder.build_load(ptr_ty, p_alloca, "inp")) {
-            BasicValueEnum::PointerValue(p) => p,
-            _ => return Err("string pointer expected".to_string()),
+        let i = match b!(self.builder.build_load(i64_ty, i_alloca, "ini")) {
+            BasicValueEnum::IntValue(i) => i,
+            _ => return Err("string index must be int".to_string()),
         };
-        let one = self.context.i32_type().const_int(1, false);
-        let p_next = b!(unsafe { self.builder.build_gep(i8_ty, p, &[one], "innext") });
-        b!(self.builder.build_store(p_alloca, p_next));
+        let i_next = b!(self
+            .builder
+            .build_int_add(i, i64_ty.const_int(1, false), "ininc"));
+        b!(self.builder.build_store(i_alloca, i_next));
         b!(self.builder.build_unconditional_branch(cond_bb));
 
         self.builder.position_at_end(done_bb);
@@ -1509,8 +1505,14 @@ impl<'ctx> Codegen<'ctx> {
             Expr::Float(v) => Ok(self.context.f64_type().const_float(*v).into()),
             Expr::Bool(b) => Ok(self.context.bool_type().const_int(*b as u64, false).into()),
             Expr::Str(s) => {
-                let g = b!(self.builder.build_global_string_ptr(s, "str"));
-                Ok(self.make_str(g.as_pointer_value(), s.len() as u64))
+                // LLVMBuildGlobalStringPtr accepts a C string and truncates at embedded NUL.
+                // Build the byte array directly so str literals preserve their explicit length.
+                let bytes = self.context.const_string(s.as_bytes(), true);
+                let global = self.module.add_global(bytes.get_type(), None, "str");
+                global.set_initializer(&bytes);
+                global.set_constant(true);
+                global.set_linkage(Linkage::Private);
+                Ok(self.make_str(global.as_pointer_value(), s.len() as u64))
             }
             Expr::Var(name) => {
                 if let Some((ptr, ty)) = self.named_values.get(name).copied() {

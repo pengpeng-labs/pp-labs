@@ -25,3 +25,8 @@ ppdb/tests/*.db
 .vscode/
 .idea/
 .DS_Store
+
+# 教程站点
+tutorial/node_modules/
+tutorial/dist/
+tutorial/.astro/

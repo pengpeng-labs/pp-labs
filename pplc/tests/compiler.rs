@@ -143,6 +143,26 @@ fn string_helpers_use_slice_length() {
 }
 
 #[test]
+fn string_membership_uses_slice_length() {
+    let output = pp(
+        "run",
+        "string_membership",
+        r#"
+fn main() -> int {
+    let text: str = "a\0z";
+    if (!(97 in text)) { return 1; }
+    if (!(0 in text)) { return 2; }
+    if (!(122 in text)) { return 3; }
+    if (120 in text) { return 4; }
+    return 0;
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "0\n");
+}
+
+#[test]
 fn allocator_returns_a_raw_pointer() {
     let alloc_lib = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

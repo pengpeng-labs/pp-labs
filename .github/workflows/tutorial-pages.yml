@@ -1,0 +1,42 @@
+name: Deploy tutorial site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tutorial-pages.yml'
+      - 'tutorial/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: tutorial-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build and upload Astro site
+        uses: withastro/action@v6
+        with:
+          path: tutorial
+          node-version: 24
+          package-manager: npm
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
