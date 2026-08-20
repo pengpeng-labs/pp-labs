@@ -298,7 +298,9 @@ impl<'a> Checker<'a> {
                 let iter_type = self.expr_type(iter)?;
                 let element = match (&iter_type, iter) {
                     (Type::Array(element, _), _) => (**element).clone(),
-                    (_, Expr::Call { callee, args }) if callee == "range" && args.len() == 1 => {
+                    (_, Expr::Call { callee, args, .. })
+                        if callee == "range" && args.len() == 1 =>
+                    {
                         Type::Int
                     }
                     _ => return Err("for loop requires an array or range(n)".to_string()),
@@ -346,7 +348,9 @@ impl<'a> Checker<'a> {
                     variant,
                     binding,
                 } => {
-                    if pattern_enum != &enum_name {
+                    if pattern_enum != &enum_name
+                        && !crate::mono::instance_of(&enum_name, pattern_enum)
+                    {
                         Err(format!(
                             "switch pattern '{}.{}' does not match enum '{}'",
                             pattern_enum, variant, enum_name
@@ -418,8 +422,8 @@ impl<'a> Checker<'a> {
             Expr::Var(name) => self.lookup(name),
             Expr::AddrOf(inner) => {
                 if let Expr::Var(name) = inner.as_ref() {
-                    if self.functions.contains_key(name) {
-                        return Ok(Type::U64);
+                    if let Some(sig) = self.functions.get(name) {
+                        return Ok(Type::Fn(sig.params.clone(), Box::new(sig.ret.clone())));
                     }
                 }
                 Ok(Type::Ptr(Box::new(self.expr_type(inner)?)))
@@ -439,11 +443,25 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Binary { op, lhs, rhs } => self.binary_type(*op, lhs, rhs),
-            Expr::Call { callee, args } => self.call_type(callee, args),
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+            } if callee == "sizeof" || callee == "alignof" => {
+                if type_args.len() != 1 || !args.is_empty() {
+                    return Err(format!(
+                        "{}[T]() requires exactly one type argument and no value arguments",
+                        callee
+                    ));
+                }
+                Ok(Type::U64)
+            }
+            Expr::Call { callee, args, .. } => self.call_type(callee, args),
             Expr::MethodCall {
                 receiver,
                 method,
                 args,
+                ..
             } => {
                 if let Expr::Var(enum_name) = receiver.as_ref() {
                     if let Some(variants) = self.enums.get(enum_name) {
@@ -504,7 +522,7 @@ impl<'a> Checker<'a> {
                 }
                 Ok(sig.ret)
             }
-            Expr::StructInit { name, fields } => {
+            Expr::StructInit { name, fields, .. } => {
                 let definition = self
                     .structs
                     .get(name)
@@ -716,6 +734,7 @@ fn assignable(source: &Type, target: &Type) -> bool {
     source == target
         || (integer(source) && integer(target))
         || match (source, target) {
+            (Type::Fn(_, _), target) if integer(target) => true,
             (Type::Tuple(left), Type::Tuple(right)) if left.len() == right.len() => left
                 .iter()
                 .zip(right.iter())

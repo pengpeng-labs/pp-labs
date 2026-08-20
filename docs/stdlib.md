@@ -1,6 +1,6 @@
 # pp-lang 标准库（stdlib）
 
-> 状态：**v0.2 草案**。最小、自包含、部分自举（大部分用 `.pp` 写，仅少数 `extern` 到 libc 或裸机服务）。
+> 状态：**v0.3**。最小、自包含、部分自举（大部分用 `.pp` 写，仅少数 `extern` 到 libc 或裸机服务）。
 
 ## 原则
 
@@ -33,6 +33,7 @@
 | `alloc.pp` | `alloc(n) -> *u8` / `dealloc(*u8)` | 调用方显式释放 |
 | `buf.pp` | `buf_new/reserve/push/append/view/clear/free` | Buf 拥有 data；`buf_view` 仅借用视图 |
 | `strmap.pp` | `map_new/set/get/has/del/free` | Map 拥有 key/value 副本；`map_get` 返回借用视图 |
+| `vec.pp` | `vec_new[T]/push/get/free` | `Vec[T]` 拥有元素缓冲；调用方显式 `vec_free[T]` |
 
 ## 数学（math.pp）
 
@@ -48,7 +49,4 @@
 | `alloc(n)` / `free(p)` | 显式分配器（bump，后置 free-list） |
 | `outb(port, val)` / `inb(port)` | 端口 IO（MMIO） |
 
-## 待决项
-
-- `string` 内建类型 vs std-lib 结构体
-- 数组语法与 `collection` 边界
+`str` 是内建切片；`Buf` 保留为字节协议缓冲，`Vec[T]` 提供通用同类型动态序列。

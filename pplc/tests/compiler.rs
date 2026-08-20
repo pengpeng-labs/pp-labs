@@ -503,3 +503,266 @@ fn main() -> int { return outer_score(Outer.Wrapped(Inner.Number(9))); }
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "9\n");
 }
+
+#[test]
+fn explicit_generic_function_is_monomorphized() {
+    let output = pp(
+        "run",
+        "generic_identity",
+        r#"
+fn identity[T](value: T) -> T { return value; }
+
+fn main() -> int {
+    let number: int = identity[int](7);
+    let text: str = identity[str]("abcd");
+    return number + len(text) as int;
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "11\n");
+}
+
+#[test]
+fn generic_capability_is_an_explicit_function_parameter() {
+    let output = pp(
+        "run",
+        "generic_capability",
+        r#"
+fn choose_max[T](a: T, b: T, less: fn(T, T) -> bool) -> T {
+    if (less(a, b)) { return b; }
+    return a;
+}
+
+fn int_less(a: int, b: int) -> bool { return a < b; }
+
+fn main() -> int {
+    return choose_max[int](3, 9, &int_less);
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "9\n");
+}
+
+#[test]
+fn generic_structs_are_distinct_concrete_types() {
+    let output = pp(
+        "run",
+        "generic_struct",
+        r#"
+struct Pair[T] { first: T, second: T }
+
+fn sum_pair(pair: Pair[int]) -> int {
+    return pair.first + pair.second;
+}
+
+fn main() -> int {
+    let pair: Pair[int] = Pair[int] { first: 8, second: 5 };
+    return sum_pair(pair);
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "13\n");
+}
+
+#[test]
+fn generic_sum_types_support_nested_instances() {
+    let output = pp(
+        "run",
+        "generic_sum_type",
+        r#"
+struct Pair[T] { first: T, second: T }
+enum Option[T] { Some(T), None }
+
+fn unwrap_pair(value: Option[Pair[int]]) -> int {
+    switch value {
+        Option.Some(pair) { return pair.first + pair.second; }
+        Option.None { return -1; }
+    }
+    return 0;
+}
+
+fn main() -> int {
+    let pair: Pair[int] = Pair[int] { first: 4, second: 6 };
+    return unwrap_pair(Option.Some[Pair[int]](pair));
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "10\n");
+}
+
+#[test]
+fn generic_calls_require_explicit_type_arguments() {
+    let output = pp(
+        "ir",
+        "generic_explicit",
+        r#"
+fn identity[T](value: T) -> T { return value; }
+fn main() -> int { return identity(1); }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires explicit type arguments"));
+}
+
+#[test]
+fn generic_size_and_alignment_are_compile_time_values() {
+    let output = pp(
+        "run",
+        "generic_size",
+        r#"
+struct Pair[T] { first: T, second: T }
+
+fn size_of_pair[T]() -> u64 {
+    return sizeof[Pair[T]]();
+}
+
+fn main() -> int {
+    return size_of_pair[u32]() as int + alignof[u64]() as int;
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "16\n");
+}
+
+#[test]
+fn generic_operators_require_an_explicit_capability() {
+    let output = pp(
+        "ir",
+        "generic_operator",
+        r#"
+fn invalid_add[T](a: T, b: T) -> T { return a + b; }
+fn main() -> int { return invalid_add[int](1, 2); }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("pass a function capability"));
+}
+
+#[test]
+fn generic_recursive_expansion_is_rejected() {
+    let output = pp(
+        "ir",
+        "generic_recursion",
+        r#"
+enum Option[T] { Some(T), None }
+
+fn grow[T](value: T) -> int {
+    return grow[Option[T]](Option.Some[T](value));
+}
+
+fn main() -> int { return grow[int](1); }
+"#,
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("recursively expands to a different instance"));
+}
+
+#[test]
+fn generic_pointer_receiver_method_uses_an_explicit_type_argument() {
+    let output = pp(
+        "run",
+        "generic_method",
+        r#"
+struct Box[T] { value: T }
+
+fn box_get[T](box: *Box[T]) -> T { return box.value; }
+
+fn main() -> int {
+    let box: Box[int] = Box[int] { value: 17 };
+    return box.box_get[int]();
+}
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "17\n");
+}
+
+#[test]
+fn generic_instances_are_deduplicated() {
+    let output = pp(
+        "ir",
+        "generic_dedup",
+        r#"
+fn identity[T](value: T) -> T { return value; }
+fn main() -> int { return identity[int](1) + identity[int](2); }
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output)
+            .matches("define i32 @__ppg_8_identity_int")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn generic_vector_grows_for_multiple_element_types() {
+    let output = pp(
+        "run",
+        "generic_vec",
+        &format!(
+            r#"
+import "{root}/stdlib/vec.pp";
+
+fn main() -> int {{
+    let numbers: Vec[int] = vec_new[int]();
+    let index: int = 0;
+    while (index < 6) {{
+        numbers.vec_push[int](index * 3);
+        index = index + 1;
+    }}
+    let bytes: Vec[u8] = vec_new[u8]();
+    bytes.vec_push[u8](7);
+    let result: int = numbers.vec_get[int](5) + bytes.vec_get[u8](0) as int;
+    numbers.vec_free[int]();
+    bytes.vec_free[u8]();
+    return result;
+}}
+"#,
+            root = env!("CARGO_MANIFEST_DIR").replace("/pplc", "")
+        ),
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "22\n");
+}
+
+#[test]
+fn generic_templates_compose_without_losing_constraints() {
+    let output = pp(
+        "run",
+        "generic_composition",
+        r#"
+fn compare[T](a: T, b: T, less: fn(T, T) -> bool) -> bool {
+    return less(a, b);
+}
+
+fn choose[T](a: T, b: T, less: fn(T, T) -> bool) -> T {
+    if (compare[T](a, b, less)) { return b; }
+    return a;
+}
+
+fn int_less(a: int, b: int) -> bool { return a < b; }
+fn main() -> int { return choose[int](2, 8, &int_less); }
+"#,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "8\n");
+
+    let invalid = pp(
+        "ir",
+        "generic_composition_invalid",
+        r#"
+fn identity[T](value: T) -> T { return value; }
+fn invalid[T](value: T) -> T { return identity[T](value) + identity[T](value); }
+fn main() -> int { return invalid[int](1); }
+"#,
+    );
+    assert!(!invalid.status.success());
+    assert!(stderr(&invalid).contains("pass a function capability"));
+}

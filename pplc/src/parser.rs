@@ -104,6 +104,7 @@ impl Parser {
 
     fn parse_struct_def(&mut self) -> Result<StructDef, String> {
         let name = self.expect_ident("struct name")?;
+        let type_params = self.parse_type_params()?;
         self.expect(&TokenKind::LBrace, "'{'")?;
         let mut fields = Vec::new();
         while !self.eat(&TokenKind::RBrace) {
@@ -117,11 +118,16 @@ impl Parser {
             self.expect(&TokenKind::RBrace, "'}'")?;
             break;
         }
-        Ok(StructDef { name, fields })
+        Ok(StructDef {
+            name,
+            type_params,
+            fields,
+        })
     }
 
     fn parse_enum_def(&mut self) -> Result<EnumDef, String> {
         let name = self.expect_ident("enum name")?;
+        let type_params = self.parse_type_params()?;
         self.expect(&TokenKind::LBrace, "'{'")?;
         let mut variants = Vec::new();
         while !self.eat(&TokenKind::RBrace) {
@@ -143,12 +149,17 @@ impl Parser {
             self.expect(&TokenKind::RBrace, "'}' after enum variants")?;
             break;
         }
-        Ok(EnumDef { name, variants })
+        Ok(EnumDef {
+            name,
+            type_params,
+            variants,
+        })
     }
 
     fn parse_prototype(&mut self) -> Result<Prototype, String> {
         self.expect(&TokenKind::Fn, "'fn'")?;
         let name = self.expect_ident("function name")?;
+        let type_params = self.parse_type_params()?;
         self.expect(&TokenKind::LParen, "'('")?;
         let mut params = Vec::new();
         let mut is_var_arg = false;
@@ -177,10 +188,41 @@ impl Parser {
         };
         Ok(Prototype {
             name,
+            type_params,
             params,
             ret,
             is_var_arg,
         })
+    }
+
+    fn parse_type_params(&mut self) -> Result<Vec<String>, String> {
+        if !self.eat(&TokenKind::LBracket) {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        loop {
+            params.push(self.expect_ident("type parameter")?);
+            if self.eat(&TokenKind::Comma) {
+                continue;
+            }
+            self.expect(&TokenKind::RBracket, "']' after type parameters")?;
+            break;
+        }
+        Ok(params)
+    }
+
+    fn parse_type_args(&mut self) -> Result<Vec<Type>, String> {
+        self.expect(&TokenKind::LBracket, "'[' before type arguments")?;
+        let mut args = Vec::new();
+        loop {
+            args.push(self.parse_type()?);
+            if self.eat(&TokenKind::Comma) {
+                continue;
+            }
+            self.expect(&TokenKind::RBracket, "']' after type arguments")?;
+            break;
+        }
+        Ok(args)
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
@@ -249,7 +291,13 @@ impl Parser {
                 "u32" => Ok(Type::U32),
                 "u64" => Ok(Type::U64),
                 "void" => Ok(Type::Void),
-                _ => Ok(Type::Named(s)),
+                _ => {
+                    if matches!(self.peek(), TokenKind::LBracket) {
+                        Ok(Type::Applied(s, self.parse_type_args()?))
+                    } else {
+                        Ok(Type::Named(s))
+                    }
+                }
             },
             _ => Err(format!(
                 "expected type at {}:{}, got {:?}",
@@ -566,6 +614,18 @@ impl Parser {
         loop {
             if self.eat(&TokenKind::Dot) {
                 let field = self.expect_ident("field name")?;
+                let saved = self.pos;
+                let type_args = if matches!(self.peek(), TokenKind::LBracket) {
+                    match self.parse_type_args() {
+                        Ok(args) if matches!(self.peek(), TokenKind::LParen) => args,
+                        _ => {
+                            self.pos = saved;
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 if self.eat(&TokenKind::LParen) {
                     // 保留接收者信息，语义阶段决定按值传递还是自动取址。
                     let mut args = Vec::new();
@@ -582,6 +642,7 @@ impl Parser {
                     expr = Expr::MethodCall {
                         receiver: Box::new(expr),
                         method: field,
+                        type_args,
                         args,
                     };
                 } else {
@@ -672,6 +733,22 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
+                let saved = self.pos;
+                let type_args = if matches!(self.peek(), TokenKind::LBracket) {
+                    match self.parse_type_args() {
+                        Ok(args)
+                            if matches!(self.peek(), TokenKind::LParen | TokenKind::LBrace) =>
+                        {
+                            args
+                        }
+                        _ => {
+                            self.pos = saved;
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 if self.eat(&TokenKind::LParen) {
                     let mut args = Vec::new();
                     if !self.eat(&TokenKind::RParen) {
@@ -684,7 +761,11 @@ impl Parser {
                             break;
                         }
                     }
-                    Ok(Expr::Call { callee: name, args })
+                    Ok(Expr::Call {
+                        callee: name,
+                        type_args,
+                        args,
+                    })
                 } else if !self.no_struct_init && self.eat(&TokenKind::LBrace) {
                     let mut fields = Vec::new();
                     if !self.eat(&TokenKind::RBrace) {
@@ -700,7 +781,11 @@ impl Parser {
                             break;
                         }
                     }
-                    Ok(Expr::StructInit { name, fields })
+                    Ok(Expr::StructInit {
+                        name,
+                        type_args,
+                        fields,
+                    })
                 } else {
                     Ok(Expr::Var(name))
                 }

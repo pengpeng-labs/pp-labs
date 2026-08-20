@@ -52,7 +52,7 @@
 
 - [x] **P5-1** 无 libc 目标：自定义 `_start` + 链接脚本 + 零 BSS
 - [x] **P5-2** emit 裸机 ELF（`pp os`，交叉编译 x86_64）
-- [x] **P5-3** 系统层：`volatile_store8/16/32`、`volatile_load8/16/32`、`outb`/`inb`（端口 IO）、十六进制字面量（`pointer` 类型 / `asm{}` / `unsafe` 以 builtin 形式后置）
+- [x] **P5-3** 系统层：`volatile_store8/16/32`、`volatile_load8/16/32`、`outb`/`inb`（端口 IO）、十六进制字面量；底层能力固定为 builtin/C/汇编胶水
 - [ ] **P5-4** `tutorial/os/00`：freestanding 开篇
 
 ## Phase 6 — pp-os v0（demo）
@@ -172,6 +172,7 @@
 
 > 两个真机平台：ThinkPad T430（x86-64，同架构验证）+ Raspberry Pi 4B 8GB（ARM64，独立移植线）。
 > 共同前置：编译器地址模型 64 位化（方案B，B-0）。
+> **决策（2026-08）**：ARM64 A-1~A-5 全线搁置，不进入 pplang v0.3；恢复时另开独立里程碑。
 
 - [x] **B-0** 编译器地址模型 64 位化——完成（`ptr_to_int`→U64、调用/返回点 coerce、`volatile_load64/store64`、`&func` 去截断）
 - [x] **B-1** QEMU 全链路回归（P14-1~6 零行为变化）+ pp-db 宿主机宿主跑通（P14-7，JIT/obj 双路径）
@@ -202,7 +203,7 @@
 - [x] **L2-2** 切片语法 `s[a:b]` + `len()` 内建（`s[a:]`/`s[:b]`/`s[:]` 齐全）
 - [x] **L2-3** 显式 allocator（`stdlib/alloc.pp`：宿主 = malloc/free；pp-os 用 kmalloc/kfree）
 - [x] **L2-4** `defer`（函数退出点 LIFO 执行）
-- [x] **L2-5** 显式判空（指针 `==`/`!=` 比较，`p == 0` 判空；`?*T` 类型可选后续）
+- [x] **L2-5** 显式判空（指针 `==`/`!=` 比较，`p == 0` 判空；不新增可选指针语法）
 
 ### 第三层：类型系统收敛
 
@@ -230,6 +231,21 @@
 - [x] **L5-1** Sum Type：`enum` + 精简 `switch` + 单层解构 + 穷尽性检查（LLVM `{tag,payload}` + switch，构造/错误路径黑盒测试）
 
 每项验收：`cargo test` + `pp ir/run/build/obj/os` + pp-db golden/持久化 + pp-os 全量重建。
+
+## Phase 20 — pplang v0.3：Ada 式显式泛型
+
+- [x] **G0-1** 边界收敛：删除源码级 `unsafe`/`asm` 与 `?*T` 规划；ARM64 target 搁置
+- [x] **G0-2** 类型查询失败必须报错，移除 codegen `typeof_expr` 的静默 `int` 回退
+- [x] **G1-1** 泛型函数声明 `fn f[T]` + 显式调用 `f[int](...)`
+- [x] **G1-2** 模板语义检查：`T` 不隐式获得算术/比较能力，能力用 `fn(T,...)` 参数显式传入
+- [x] **G1-3** AST 单态化工作队列、实例去重、递归膨胀检测与内部符号 mangling
+- [x] **G2-1** 泛型 `struct` / `enum` 与具体类型 `Vec[int]` / `Option[str]`
+- [x] **G2-2** 泛型 struct 构造、enum 构造与 Sum Type 穷尽检查
+- [x] **G2-3** 嵌套实例（如 `Option[Vec[int]]`）与实例布局去重
+- [x] **G2-4** `sizeof[T]()` / `alignof[T]()` 编译期整数内建
+- [x] **G3-1** v0.3 spec/design 定稿 + 泛型正反例 + 全仓库回归（compiler 35/35、pp-db PASS、pp-os 全量重建）
+
+边界：不做类型参数推导、trait/interface、类型集合、约束求解、specialization、comptime、泛型 extern ABI。
 
 ---
 

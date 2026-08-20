@@ -1,14 +1,14 @@
 # 开发进度实录（截至 2026-08）
 
 > 本文档如实记录当前实际开发进度、遇到的困难与卡点，供协同开发参考。
-> 任务台账以 docs/roadmap.md 为准（当前 checkbox 94/125；包含被后续阶段覆盖的历史重复项）；本文是"实际状态 + 困难"的补充记录。
+> 任务台账以 docs/roadmap.md 为准（当前 checkbox 104/135；包含被后续阶段覆盖的历史重复项）；本文是"实际状态 + 困难"的补充记录。
 
 ---
 
 ## 1. 总体状态
 
 网络栈重构已收尾：**uIP 1.0 胶水端到端打通**（DNS → TCP → TLS → HTTPS → DeepSeek 工具调用，QEMU slirp 实测）。
-pp-db P15-1 收尾（SQL `SELECT *` + 多轮连接健壮性）、语言三层演进（L1/L2/L3）与 pplang v0.2 语义收口均已完成。
+pp-db P15-1 收尾、语言三层演进（L1/L2/L3）、pplang v0.2 语义收口与 v0.3 显式泛型均已完成。
 
 | 线 | 状态 | 卡点 |
 |---|---|---|
@@ -23,14 +23,16 @@ pp-db P15-1 收尾（SQL `SELECT *` + 多轮连接健壮性）、语言三层演
 
 ### 2.1 语言线（pp-lang）— 完成
 
-- 编译器：lexer/parser/AST/sema/codegen（LLVM IR，inkwell）6 个 Rust 源文件
+- 编译器：lexer/parser/AST/mono/sema/codegen（LLVM IR，inkwell）7 个 Rust 源文件
 - 命令：`pp ir / run / obj / os / build` 全可用
-- 语言能力：let/while/if/struct/enum+switch/import/extern/数组/指针/协程/volatile/u64
+- 语言能力：let/while/if/struct/enum+switch/显式泛型/import/extern/数组/指针/协程/volatile/u64
 - **方案B（地址模型 64 位化）已完成**：`ptr_to_int`→U64、调用/返回点 coerce、`volatile_load64/store64`、`&func` 去截断；宿主机静态数据 >4GB 无截断
 - **spec §7 已知编译器问题**：✅ 已全部修复（同名函数重定义报错、variadic extern `...` 语法、数组字面量）
 - **pplang v0.2**：小型 sema + 词法作用域、严格 bool、无符号运算、str/FFI 边界与切片检查、指针接收者、受限 tuple
 - **v0.2 Sum Type**：`enum` 零/单 payload + 精简 `switch` 单层解构；重复分支、payload 形状、通配顺序与穷尽性均由 sema 检查；LLVM tag 跳转表落地
 - **v0.2 stdlib**：`Buf` 可增长字节缓冲 + `StrMap`（FNV-1a/开放寻址/扩容/owned key-value）；编译器黑盒测试 23 项全绿
+- **pplang v0.3**：Ada 式显式泛型函数/struct/enum；函数指针表达能力约束；AST 单态化、实例去重与递归膨胀检查；`sizeof[T]`/`alignof[T]`
+- **v0.3 stdlib**：`Vec[T]` 用具体元素尺寸分配与扩容，`int`/`u8` 双实例验证；编译器黑盒测试 35 项全绿
 
 ### 2.2 OS 线（pp-os）— 功能齐全，uIP 网络栈打通
 
@@ -72,7 +74,7 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 ### 2.4 裸机线 — 刚启动
 
 - B-0/B-1 ✅：编译器地址模型 64 位化 + 内核回归
-- T-1/T-2（T430）、A-1~A-5（RPi4）：未开始，设计见 docs/baremetal.md
+- T-1/T-2（T430）未开始；A-1~A-5（RPi4/ARM64）已明确搁置
 
 ---
 

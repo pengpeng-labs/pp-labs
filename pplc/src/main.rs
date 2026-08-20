@@ -8,6 +8,7 @@
 mod ast;
 mod codegen;
 mod lexer;
+mod mono;
 mod parser;
 mod sema;
 
@@ -163,6 +164,7 @@ fn load_program(path: &str) -> Result<Vec<ast::Item>, String> {
     let mut out = Vec::new();
     let mut visited = Vec::new();
     resolve_imports(items, &base, &mut out, &mut visited)?;
+    let out = mono::monomorphize(out)?;
     sema::check_program(&out)?;
     Ok(out)
 }

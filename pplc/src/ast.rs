@@ -16,6 +16,7 @@ pub enum Type {
     Tuple(Vec<Type>),
     Void,
     Named(String),
+    Applied(String, Vec<Type>),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -65,15 +66,18 @@ pub enum Expr {
     },
     Call {
         callee: String,
+        type_args: Vec<Type>,
         args: Vec<Expr>,
     },
     MethodCall {
         receiver: Box<Expr>,
         method: String,
+        type_args: Vec<Type>,
         args: Vec<Expr>,
     },
     StructInit {
         name: String,
+        type_args: Vec<Type>,
         fields: Vec<(String, Expr)>,
     },
     Field {
@@ -151,6 +155,7 @@ pub struct Block {
 #[derive(Debug, Clone)]
 pub struct Prototype {
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<(String, Type)>,
     pub ret: Type,
     pub is_var_arg: bool,
@@ -165,6 +170,7 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct StructDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<(String, Type)>,
 }
 
@@ -177,6 +183,7 @@ pub struct EnumVariant {
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub variants: Vec<EnumVariant>,
 }
 

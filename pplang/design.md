@@ -14,22 +14,22 @@
 
 ## 2. 设计原则
 
-1. **语法极简，复杂度下放**——宁可 `if/else if` 写二十行，不要 `match` 模式匹配语法；宁可手写函数指针表，不要泛型/trait。"写的时候麻烦一点可以，语法不要麻烦"。
+1. **语法极简，复杂度下放**——宁可 `if/else if` 写二十行，不要完整 `match`；泛型只做显式实参，操作能力只用函数指针，不引入 trait。"写的时候麻烦一点可以，语法不要麻烦"。
 2. **指针必须有，但不裸奔**——freestanding 环境绕不开裸指针（MMIO/FFI/DMA/分配器），但必须给它配上信息与约束（见 §5）。
 3. **类型系统 C 级别**——静态标注 + 朴素推导 + 显式转换，够用即可；不做 TAPL 的形式化深水区（多态/子类型/safety 证明）。
-4. **约束靠"信息绑定 + 生命周期约定"，不靠"所有权证明"**——用切片（绑长度）、`defer` + 显式 allocator（绑生命周期）、可选指针（绑空检查）来约束指针，**不引入 borrow checker**。
+4. **约束靠"信息绑定 + 生命周期约定"，不靠"所有权证明"**——用切片（绑长度）、`defer` + 显式 allocator（绑生命周期）、显式判空来约束指针，**不引入 borrow checker**。
 
 ## 3. 当前能力盘点（与 spec.md 对齐）
 
 **已有**：
 - 20 关键字：`fn extern if else return let while for in as defer break continue struct enum switch import static true false`
-- 类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr,len}`)、`u8/u16/u32/u64`、`struct`(值语义)、`enum`(tagged union)、`[N]T`(长度前置)、`fn(...) -> ret`(函数指针)、`*T`、受限 tuple
+- 类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr,len}`)、`u8/u16/u32/u64`、`struct`(值语义)、`enum`(tagged union)、显式泛型、`[N]T`(长度前置)、`fn(...) -> ret`(函数指针)、`*T`、受限 tuple
 - 语句/表达式：`let`(推断+零初始化)、赋值(含 `*p=v`/`buf[i]=v`)、`return`、`if/else`、`while`、`for x in s` + `range(n)`、`switch`、`defer`(退出点 LIFO)、`break/continue`、二元/一元运算、`x in s` 成员判断、显式 cast `x as T`、`struct`/`enum` 构造、字段、方法糖 `p.m(x)`、下标、数组字面量 `[e,e,...]`、指针 `&x *p p[i] p+i`、指针判空 `p == 0`、函数指针调用 `fp()`
 - 顶层：`fn`、`extern`(含 variadic `...`)、`struct`、`enum`、`import`、`static`
 - 系统层内置：`print/println`、`volatile_load/store8/16/32/64`、`outb/inb/outl/inl`、`cli/sti/hlt`、`rdtsc`、`atomic_xchg`、`int_to_ptr/ptr_to_int`、`&func`(取址)
-- stdlib：`alloc.pp`(显式裸指针 alloc/dealloc)、`math.pp`、`string.pp`、`buf.pp`、`strmap.pp`
+- stdlib：`alloc.pp`(显式裸指针 alloc/dealloc)、`math.pp`、`string.pp`、`buf.pp`、`strmap.pp`、`vec.pp`(`Vec[T]`)
 
-**spec 纸上写了但未实现**：`unsafe` `asm`
+源码级 `unsafe`/`asm` 已明确不做；底层操作使用 compiler builtin 与 C/汇编胶水。
 
 ## 4. 演进清单（分三层，按优先级）
 
@@ -50,7 +50,7 @@
 
 ### 第二层：指针 + 内存约束（核心，治"C 指针满天飞"）
 
-> ✅ 已落地（2026-08）：`str` 切片化（`{ptr,len}` + `len()` + `s[a:b]` 切片语法）、`defer`、显式 allocator（`stdlib/alloc.pp`）、显式判空（`p == 0`/`!=`）。剩指针分层（`*T` vs 切片分离），单独下一轮。
+> ✅ 已落地（2026-08）：`str` 切片化（`{ptr,len}` + `len()` + `s[a:b]` 切片语法）、`defer`、显式 allocator（`stdlib/alloc.pp`）、显式判空（`p == 0`/`!=`）。
 
 | 项 | 要改成 | 对应 Zig |
 |----|--------|---------|
@@ -58,7 +58,7 @@
 | **指针分层** | 业务层切片 / 底层裸指针 `*T`（只给 MMIO/FFI/DMA） | `[]T` vs `[*]T` |
 | **显式 allocator** | `alloc(n)`/`free(p)` 标准化进 stdlib + arena 整块释放 | 显式传 allocator |
 | **`defer`** | `defer free(p)` 绑作用域，一个关键字 | `defer` |
-| **可选指针 / 显式判空** | `?*T` 或解引用前 `if p != 0` | `?*T` |
+| **显式判空** | 解引用前 `if p != 0`；需要携带状态时使用 Sum Type | `?*T` 的低复杂度替代 |
 
 ### 第三层：类型系统收敛（C 级别，不做深水区）
 
@@ -70,9 +70,9 @@
 | 类型不匹配报错 | 现在静默 coerce 藏隐患 | 编译错误 |
 | 同名函数重定义报错 | spec §7 已记录，补上 | 编译错误 |
 
-### 第四层：机制借鉴
+### 第四层：机制借鉴（已落地）
 
-> ⚠️ 候选（2026-08 讨论）。两条来源：Lua 的"少 feature，多 mechanism"（table + 元方法顶了数组/字典/对象/继承/运算符重载）；TAPL 的"低阶高价值"特性（sum type 是 record 的对偶，比泛型便宜一个数量级）。pp 只借思想，不抄语法与运行时。
+> ✅ v0.3 已落地。两条来源：Lua 的"少 feature，多 mechanism"与 TAPL 的低阶类型机制；pp 只借思想，不抄动态运行时或复杂约束系统。
 
 依赖链（顺序不可乱）：`多返回值（编译器）→ StrMap（标准库）→ 接口统一（先软后硬）`。
 
@@ -80,6 +80,7 @@
 |----|------|------|------|
 | **多返回值** `(T1,T2)` | `fn f() -> (bool,int)` 使用 LLVM literal struct，支持 tuple 值与 `let (a,b)` 解构 | 编译器 + sema | ✅ v0.2 完成 |
 | **Sum Type** `enum` + 精简 `switch` | tag + payload + 穷尽性检查，见 §4.1 | 两个关键字 + tag 编号/穷尽性检查/跳转表，接近 record | ✅ v0.2 完成 |
+| **显式泛型** | `f[int]` / `Vec[int]` / `Option[int]`，能力用函数指针参数 | AST 单态化，无运行时与约束求解 | ✅ v0.3 完成 |
 | **关联容器** `StrMap` | 标准库 FNV-1a + 开放寻址，键值都 `str`，见 §6.4 | 纯 `.pp` | ✅ v0.2 完成 |
 | **接口统一** | 先"软统一"（`map_get/has/set/del/free`）；硬统一需元方法/编译期分发 | 软=零 / 硬=高 | ✅ 软统一；硬统一远期 |
 
@@ -124,20 +125,20 @@ fn value_to_int(v: Value) -> int {
 - 成本：`enum`/`switch` 两个关键字 + tag 编号 + 穷尽性检查 + 跳转表——接近 record，远低于泛型（不用 `[]T`、不用单态化）。
 - 历史定位：源自 ML（Robin Milner, 1973），经 OCaml/SML/Haskell 普及，现已是 Rust/Swift/TS/Kotlin/Python/Java 主流标配，仅 Go 缺失。
 
-### 4.2 泛型边界（Ada 借鉴，候选）
+### 4.2 显式泛型边界（Ada 借鉴，v0.3 主线）
 
 泛型 = 两个独立需求：
 
 | 需求 | 例子 | Ada 怎么解 | pp 现状 |
 |------|------|-----------|--------|
-| (a) 类型参数化 | `Map<str,int>` vs `Map<int,int>` | 显式实例化 `is new` | ⚠️ 字节擦除/固定手写顶替 |
+| (a) 类型参数化 | `Map[str,int]` vs `Map[int,int]` | 显式实例化 `is new` | ✅ 显式实参 + 单态化 |
 | (b) 操作约束 | `T` 能比较/哈希 | 显式声明操作 `with function "<"` | ✅ 函数指针已完成 |
 
 **核心结论**：Ada 的"显式声明操作"降级成函数指针 = `fn sort(compare: fn(T,T)->bool)`，泛型体内写 `compare(a,b)` 而非 `a < b`。pp 的"显式"哲学更倾向后者，所以 **(b) 不需要任何泛型语法，函数指针就是 Ada 的降级版**。
 
-(a) 类型参数化 pplang 现在用两招顶替：固定类型手写（`StrMap`/`IntMap`，源码重复）+ 字节串擦除（int 序列化进 `str`，丢编译期类型检查）。
+(a) 类型参数化由显式单态化实现；原有 `Buf`/`StrMap` 保留为领域专用容器，通用序列使用 `Vec[T]`。
 
-**未来真上泛型**（触发：第 3+ 个容器且类型域超出字节/整数/指针），只抄 Ada 显式实例化：
+v0.3 只抄 Ada 的显式实例化：
 
 ```
 Ada:  with function "<"(L,R:T) is <>      泛型体内写 a < b
@@ -147,9 +148,10 @@ Ada:  package Int_Sort is new Sorting(Integer)  // 显式实例化，无推导
 pp:   sort[int](...)                             // (a) 显式实例化
 ```
 
-- 做：显式实例化（`sort[int]`）+ 显式声明操作（函数指针），无推导、无约束求解。
+- 做：显式实例化（`sort[int]`）+ 显式声明操作（函数指针）+ 泛型 struct/enum + `sizeof[T]`/`alignof[T]`，无推导、无约束求解。
 - 不做：Go 类型集合（`T: Ordered` 白名单 + 推导是负担）、Rust trait（深水区）、Zig comptime（§7 已排除）。
 - 理由：Ada 的"显式 > 隐式"约束模型天生契合 pp 哲学，是"约束最强"里最轻的一条路；且 (b) 已被函数指针吃掉，剩下的 (a) 只在类型域真正变宽时才值当。
+- 实现边界：泛型在 sema/codegen 前展开为普通 AST；实例名是编译器内部细节，不构成 extern ABI。
 
 ## 5. 指针与内存约束（核心章节）
 
@@ -185,6 +187,7 @@ Zig 有 6 种指针（`*T`、`*const T`、`[*]T`、`[]T`、`?*T`、`[:0]T`），
 | 结构体 `struct` | 异类数据组合（值语义） | ✅ 已有，保持 |
 | 切片 `str` | 动态序列视图（`{ptr, len}`） | ✅ 已落地（`len()` O(1)、`s[a:b]` 切片、字面量带长） |
 | 动态数组 `Buf` | 可增长字节序列 | ✅ v0.2 标准库实现 |
+| 泛型向量 `Vec[T]` | 可增长同类型值序列 | ✅ v0.3 标准库实现 |
 | 关联容器 `StrMap` | 键值映射（哈希表） | ✅ v0.2 标准库实现，键值都 `str` |
 
 ### 6.1 为什么切片是核心、且要"无借用"
@@ -250,11 +253,12 @@ fn map_free(m: *StrMap)
 ## 7. 明确不做（边界）
 
 - ❌ 所有权 / borrow checker（Rust 最痛的点）
-- ❌ 泛型 / trait / 接口
+- ❌ trait / 接口、类型集合、泛型参数推导与约束求解（只做 §4.2 的显式单态化泛型）
 - ❌ `match` 模式匹配（可用简单版 `switch` 或就 `if/else`）
 - ❌ GC
 - ❌ 闭包 / 异步 / 异常 / 宏
 - ❌ `comptime` 元编程（Zig 的深水区）
+- ❌ 源码级 `unsafe {}` / `asm {}` 与 `?*T` 可选指针语法
 - ❌ 多态 / 子类型 / 递归类型 / HM 推断（TAPL 主线，超纲）
 - ❌ Lua 万能 table / metatable 运行时反射（需动态类型 + GC + 运行时哈希，照搬=重造 Lua；关联容器走标准库 `StrMap` 见 §6.4）
 
