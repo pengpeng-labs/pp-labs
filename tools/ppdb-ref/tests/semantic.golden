@@ -1,0 +1,5 @@
+rows=[[Text("Rome"), Int(8)]]
+plan=people_id
+rollback-kv=None
+rollback-doc=None
+committed=[[Int(11), Text("Bob")]]

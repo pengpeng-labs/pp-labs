@@ -5,6 +5,7 @@
      hf_write(idx: int, data: u64, len: int)    从开头写（截断语义）
      hf_write_at(idx: int, data: u64, len: int, off: int)  偏移写
      hf_read_at(idx: int, buf: u64, len: int, off: int) -> int  区间读，返回实际字节数
+     hf_close(idx: int)                    内存 FS no-op
    数据指针用 u64（地址通道 64 位）；pp-os 内核低地址经 coerce 截断无损。 */
 
 fn hf_find(name: str) -> int {
@@ -25,4 +26,8 @@ fn hf_write_at(idx: int, data: u64, len: int, off: int) {
 
 fn hf_read_at(idx: int, buf: u64, len: int, off: int) -> int {
     return fs_read_at(idx, buf, len, off);
+}
+
+fn hf_close(idx: int) {
+    /* 内存 FS 使用稳定槽号，没有可关闭的句柄。 */
 }

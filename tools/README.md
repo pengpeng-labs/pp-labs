@@ -1,5 +1,7 @@
 # tools
 
+- `ppdb-ref/`：pp-db 的 Rust 语义对照实现。运行 `cargo test --manifest-path tools/ppdb-ref/Cargo.toml`。
+
 仓库级辅助工具目录（当前为空，占位）。
 
 ## 规划

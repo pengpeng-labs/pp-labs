@@ -18,6 +18,7 @@ import "../ppdb/db_sql_parse.pp";
 import "../ppdb/db_sql_exec.pp";
 import "../ppdb/db_kv.pp";
 import "../ppdb/db_doc.pp";
+import "../ppdb/db_tx.pp";
 import "../ppdb/db_persist.pp";
 
 /* 全局状态 */
@@ -256,7 +257,7 @@ fn cmd_sql() {
     let rc: int = db_parse_sql(0x400200 + 4);
     if (rc < 0) {
         serial_print("sql: syntax error\n");
-    } else if (db_stmt_type == 0) {
+    } else if (db_stmt_is_create() || db_stmt_is_tx()) {
         db_exec(-1);
     } else {
         let tid: int = db_find_table(int_to_ptr(db_stmt_table));

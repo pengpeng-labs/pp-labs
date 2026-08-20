@@ -1,7 +1,7 @@
 # 开发进度实录（截至 2026-08）
 
 > 本文档如实记录当前实际开发进度、遇到的困难与卡点，供协同开发参考。
-> 任务台账以 docs/roadmap.md 为准（当前 checkbox 104/135；包含被后续阶段覆盖的历史重复项）；本文是"实际状态 + 困难"的补充记录。
+> 任务台账以 docs/roadmap.md 为准；本文是"实际状态 + 困难"的补充记录。
 
 ---
 
@@ -14,7 +14,7 @@ pp-db P15-1 收尾、语言三层演进（L1/L2/L3）、pplang v0.2 语义收口
 |---|---|---|
 | 语言线（pp-lang 编译器） | ✅ 核心完成 | 无（地址模型 64 位化已解决） |
 | OS 线（pp-os） | ✅ 功能齐全，uIP 网络栈打通 | 无（手写 TCP 已归档） |
-| 数据库线（pp-db） | ✅ P14 全完成 + P15-1/P15-2 完成 | 无 |
+| 数据库线（pp-db） | ✅ P14~P16 全完成并收尾 | 无 |
 | 裸机线（T430/RPi4） | 🟢 刚启动（B-0/B-1 完成） | 等 db ask 收尾后切入 |
 
 ---
@@ -72,6 +72,10 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 
 已完成：
 - **P15-1 db ask**：网络链路 + SQL `SELECT *` + 多轮 TLS 连接健壮性全打通（DNS→TCP→TLS→HTTPS→DeepSeek tool_call 全通）。
+- **pp-db 稳定化 S1~S5**：修复第 128 页越界和固定槽边界；SQL parser 移除 pp-os 固定地址并用 v0.3 Sum Type 表达 statement/value/比较；PDB4 保存真实列名；project/WHERE/UPDATE 按名称执行；native CLI、pp-os、MCP 共用 parser/executor；`DbScan` 支持嵌套扫描；DELETE 即时回收页内空间；load 两遍预检且失败不污染现有状态。
+- **P15-3a**：`SELECT ... TO JSON` 完成，复用真实投影和 WHERE，CLI/MCP 共用 JSON 输出路径。
+- **P15-3b/P16**：稳定 row ID + 直接定位、有序单列 INT 索引、等值/范围 planner、PDB4 索引定义、CRUD 重建；BEGIN/COMMIT/ROLLBACK before-image UNDO；Rust 语义 oracle 与 Starlight ppdb 6 章教程完成。
+- **回归**：host golden、跨进程 PDB4+索引往返、第 128 页、KV/Doc 满容量、多字符串/乱序 INSERT、非首列条件与更新、索引范围计划/维护、RDB+KV+Doc 事务、嵌套扫描、200 轮删除复用、损坏镜像均通过；Rust golden、Starlight build、pp-os 两阶段构建通过。
 
 ### 2.4 裸机线 — 刚启动
 
@@ -108,7 +112,7 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 - **现象 1**：DeepSeek 返回 `SELECT * FROM notes`，pp-db SQL 解析器报 `sql: syntax error`（`*` 通配符/星号列未支持）
 - **现象 2**：第三轮工具调用 `no https response`（多轮 TLS 连接偶发失败）
 - **归属**：均非网络栈（uIP 链路已通），属 pp-db SQL 解析器与 agent 多轮连接管理
-- **结局**：① `db_sql_parse.pp` 解析 `*` + `db_sql_exec.pp` 展开列占位 c0/c1/...；② `uip_glue.c` 每轮 connect 重置接收环形缓冲 `rxbuf_head/tail/full`（跨轮残留污染下一轮 TLS 记录 + 缓冲末尾 space 截断大响应）
+- **结局**：① `db_sql_parse.pp` 解析 `*`，稳定化阶段后由 `db_sql_exec.pp` 展开表目录中的真实列名；② `uip_glue.c` 每轮 connect 重置接收环形缓冲 `rxbuf_head/tail/full`（跨轮残留污染下一轮 TLS 记录 + 缓冲末尾 space 截断大响应）
 
 ---
 
@@ -128,11 +132,9 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 
 | 优先级 | 事项 | 适合谁 |
 |---|---|---|
-| 🟡 | P15-3 索引 + SELECT TO JSON（纯 pp-db，不依赖网络） | **可并行** |
 | 🟡 | T-1 VGA 控制台（不依赖网络栈） | **可并行** |
 | 🟡 | A-1 编译器 ARM 目标（独立于网络栈） | **可并行** |
-| 🟢 | P16-1 事务 / P16-2 Rust 对照 / P16-3 教程 | 可并行 |
-| 🟢 | pplc / ppdb / ppos 教程（P13-4~6）与 pplang 英译（P13-7） | 可并行 |
+| 🟢 | pplc / ppos 教程（P13-4/P13-6）与 pplang 英译（P13-7） | 可并行 |
 | 📌 | ~~uIP 集成修复未提交~~（已提交 `4a05108`/`c8ea251`/`7a31bd5`） | 已解决 |
 
 ---
@@ -140,7 +142,7 @@ uIP 集成期间修复的 6 个 bug（均在 ppos 侧，非 uIP 本身）：
 ## 6. 协同开发建议
 
 1. **uIP 集成修复已提交**（`4a05108`/`c8ea251`/`7a31bd5`）：语言三层演进、db ask 收尾、数组语法迁移均已入库
-2. **可并行任务**：P15-3（索引）、T-1（VGA 控制台）、A-1（ARM 目标）均可并行，
+2. **pp-db 后续任务已清零**；可切换到 T-1（VGA 控制台），ARM 目标继续搁置，
    可分配给不同人
 3. **单线程任务**：无（db ask 收尾已完成，P15-1 已验收）
 4. **文档现状**：roadmap.md 是任务台账，baremetal.md 是裸机设计，ppdb.md 是数据库设计

@@ -9,6 +9,9 @@
 pplc/target/
 pplc/*.o
 
+# Rust 对照工具
+tools/ppdb-ref/target/
+
 # OS
 ppos/kernel.elf
 ppos/kernel.elf64

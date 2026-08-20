@@ -12,11 +12,25 @@ sql CREATE TABLE dup (a int)
 sql INSERT INTO notes (id,msg) VALUES (1,'hello')
 sql INSERT INTO notes (id,msg) VALUES (2,'world')
 sql INSERT INTO notes (id,msg) VALUES (3,'pp-db')
+sql CREATE INDEX notes_id ON notes(id)
 
 # ---- SQL：SELECT（全列 + WHERE 第 0 列）----
 sql SELECT id,msg FROM notes
 sql SELECT id,msg FROM notes WHERE id=2
 sql SELECT id,msg FROM notes WHERE id=99
+sql SELECT msg,id FROM notes WHERE id=2 TO JSON
+
+# ---- 事务：RDB/KV 回滚 + 提交 ----
+sql BEGIN
+kv put tx temporary
+sql INSERT INTO notes (id,msg) VALUES (4,'rolled-back')
+sql ROLLBACK
+kv get tx
+sql SELECT id,msg FROM notes WHERE id=4
+sql BEGIN
+sql INSERT INTO notes (id,msg) VALUES (4,'committed')
+sql COMMIT
+sql SELECT id,msg FROM notes WHERE id=4
 
 # ---- SQL：空表与错误路径 ----
 sql SELECT id FROM empty
@@ -48,6 +62,7 @@ save test.db
 
 # ---- 元信息 ----
 tables
+indexes
 help
 unknown_command_xyz
 quit

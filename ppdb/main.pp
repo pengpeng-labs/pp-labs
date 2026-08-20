@@ -3,6 +3,7 @@
 import "db_core.pp";
 import "db_kv.pp";
 import "db_doc.pp";
+import "db_tx.pp";
 import "db_persist.pp";
 import "host_native.pp";
 import "host_file_native.pp";
@@ -16,7 +17,8 @@ fn serial_putc(c: int) {
 fn serial_print(s: str) {
     let a: u64 = ptr_to_int(s);
     let i: int = 0;
-    while (volatile_load8(a + i) != 0) {
+    let n: int = len(s) as int;
+    while (i < n) {
         serial_putc(volatile_load8(a + i));
         i = i + 1;
     }
@@ -74,8 +76,8 @@ fn main() -> int {
     print_int(tid2);
     serial_putc(10);
     if (tid2 >= 0) {
-        db_scan_init(tid2);
-        let rec: u64 = db_scan_next();
+        let scan: DbScan = db_scan_open(tid2);
+        let rec: u64 = db_scan_next(&scan);
         while (rec != 0) {
             print_int(db_col(rec, tid2, 0));
             serial_putc(32);
@@ -86,7 +88,7 @@ fn main() -> int {
                 k = k + 1;
             }
             serial_putc(10);
-            rec = db_scan_next();
+            rec = db_scan_next(&scan);
         }
     }
     return 0;

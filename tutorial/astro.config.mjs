@@ -65,11 +65,11 @@ export default defineConfig({
       lastUpdated: true,
       customCss: ['./src/styles/custom.css'],
       sidebar: [
-        { label: '导览', items: [{ label: '四套教程', link: '/xlc-lang/' }] },
+        { label: '导览', items: [{ label: '四套教程', link: '/' }] },
         {
           label: 'pplang v0.3',
           items: [
-            { label: '语言总览', link: '/xlc-lang/pplang/v0-3/' },
+            { label: '语言总览', link: '/pplang/v0-3/' },
             {
               label: '来源与设计',
               items: [{ autogenerate: { directory: 'pplang/v0-3/design' } }],
@@ -85,11 +85,14 @@ export default defineConfig({
           ],
         },
         {
+          label: 'ppdb 数据库',
+          items: [{ autogenerate: { directory: 'ppdb' } }],
+        },
+        {
           label: '后续教程',
           items: [
-            { label: 'pplc 编译器', link: '/xlc-lang/pplc/' },
-            { label: 'ppdb 数据库', link: '/xlc-lang/ppdb/' },
-            { label: 'ppos 操作系统', link: '/xlc-lang/ppos/' },
+            { label: 'pplc 编译器', link: '/pplc/' },
+            { label: 'ppos 操作系统', link: '/ppos/' },
           ],
         },
       ],

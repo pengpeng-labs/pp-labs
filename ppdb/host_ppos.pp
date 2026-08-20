@@ -18,7 +18,8 @@ fn db_page_alloc() -> int {
 }
 
 fn db_page_ptr(n: int) -> u64 {
-    return 0x680000 + n * DB_PAGE_SIZE;
+    /* 0x680000 对应逻辑页 1；页号 0 仅作链尾哨兵。 */
+    return 0x680000 + (n - 1) * DB_PAGE_SIZE;
 }
 
 fn db_page_dirty(n: int) {

@@ -118,7 +118,7 @@
 - [x] **P13-2** pplang v0.3 使用教程：从第一个程序到 Sum Type、显式泛型与系统边界
 - [x] **P13-3** pplang v0.3 参考手册：词法、语法、类型、语义、ABI、CLI，并与 `pplang/spec.md` 对齐
 - [ ] **P13-4** pplc 教程：lexer → parser → sema → monomorphization → LLVM codegen（合并 P2-3、P3-6）
-- [ ] **P13-5** ppdb 教程：存储 → SQL → KV/Doc → 持久化 → Agent
+- [x] **P13-5** ppdb 教程：架构 → 页存储 → SQL → KV/Doc/PDB4 → 索引/事务 → Agent/MCP/验证
 - [ ] **P13-6** ppos 教程：boot → 中断 → shell → 协程 → 网络 → app（合并 P5-4、P6-6）
 - [ ] **P13-7** 英文内容逐篇补齐；中文稳定内容为缺失翻译的回退来源
 
@@ -153,27 +153,38 @@
 ## Phase 14 — pp-db：利于 agent 的多模型嵌入式数据库（设计见 docs/ppdb.md）
 
 > 定位：独立小型多模型数据库（RDB + KV + Doc，SQLite 风格），pp-os 为首个宿主（存 LLM 会话/上下文/配置）；双宿主（pp-os + 宿主机）。
-> 原理主线（存储/缓冲池/解析器/执行器）手写；索引参考移植（SkipList/B+树思想），不从头发明。
+> 原理主线（页存储/解析器/执行器）手写；索引参考移植（SkipList/B+树思想），不从头发明。
 
 - [x] **P14-1** 存储内核：页式堆表（页链+slot array）+ 页分配（页号从 1 起）+ 扫描迭代器——pp-os 内验证通过（建表/插入/扫描）
 - [x] **P14-2** SQL lexer/parser（CREATE/DROP/INSERT/SELECT(WHERE/LIMIT)/UPDATE/DELETE）——pp-os 验证通过
 - [x] **P14-3** 执行器（seq_scan/filter/project/CRUD + 表格式输出）——验证通过
-- [x] **P14-4** KV 接口（有序映射：SkipList 参考移植）+ Doc 接口（json.pp 复用）——pp-os 验证通过（put/get/del + doc put/get）
+- [x] **P14-4** KV 接口（≤64 项有序数组）+ Doc 接口（≤16 项固定槽）——pp-os 验证通过（put/get/del + doc put/get）
 - [x] **P14-5** `sql`/`db` 命令 + app 注册 + 表格式输出——验证通过（db create/list/drop、真实 DROP TABLE、app list 含 sql/db）
 - [x] **P14-6** 二进制 `db save/load`（fs_write_bin）——验证通过（表/KV/Doc/页区整库镜像，多页表往返恢复正确）
 - [x] **P14-7** 宿主机宿主跑通——验证通过（`pp run` JIT 与 `pp obj`+cc 双路径，建表/插入/扫描输出正确）
+
+### Phase 14.8 — pp-db 语义与存储稳定化（P15-3 前置）
+
+> pplang v0.3 已定版，先用 `str`、struct、Sum Type 和 tuple 收敛 pp-db 的旧式整数标签/裸地址接口；完成本阶段后再叠加索引与事务。
+
+- [x] **PPDB-S1 边界安全**：修复 1-based 页号映射；统一 KV/Doc 固定槽的容量、截断和 NUL 终止规则；增加第 128 页与满容量回归
+- [x] **PPDB-S2 类型化 SQL IR**：以 `DbValue` / `DbCmpOp` / `DbStmtKind` Sum Type 替换 statement/比较/值整数标签和 `int` 指针槽，移除 parser 的 pp-os 固定地址依赖
+- [x] **PPDB-S3 SQL 语义收敛**：持久化真实列名（当前 PDB4）；按名称执行 project/WHERE/UPDATE；native CLI 与 pp-os/MCP 共用 parser + executor
+- [x] **PPDB-S4 存储可靠性**：`DbScan` 实例化；删除即时压缩复用；load 预检、失败不污染现有状态；native 关闭 fd、pp-os 明确 no-op
+- [x] **PPDB-S5 回归矩阵**：覆盖页上限、多字符串列、非首列条件/更新、投影重排、嵌套扫描、删除复用、损坏/截断镜像，并对齐 `docs/ppdb.md`
 
 ## Phase 15 — pp-db v2：Agent 结合
 
 - [x] **P15-1** `db ask`（NL→操作）+ agent 数据模型（messages 表/kv 状态/doc 会话，替代 0x675000）——网络链路 + SQL `SELECT *` + 多轮 TLS 连接健壮性全打通（DNS→TCP→TLS→HTTPS→DeepSeek tool_call 全通）
 - [x] **P15-2** MCP 工具（sql/kv/doc 三类）——验证通过（JSON-RPC tools/list + tools/call：SELECT 表格式返回、kv put/get、doc put/get 含 JSON 转义）
-- [ ] **P15-3** 关系索引（CREATE INDEX，参考移植）+ `SELECT ... TO JSON`
+- [x] **P15-3a** `SELECT ... TO JSON`：复用真实列投影/WHERE，CLI 与 MCP 输出 JSON 对象数组
+- [x] **P15-3b** 首版关系索引：slot 稳定 row ID + 直接定位表；单列 INT `CREATE INDEX`；PDB4 持久化定义；CRUD 重建；等值/范围 planner
 
 ## Phase 16 — pp-db v3 + 对照实现（可选）
 
-- [ ] **P16-1** 事务：BEGIN/COMMIT/ROLLBACK（UNDO 日志）+ 表锁
-- [ ] **P16-2** `tools/ppdb-ref`：Rust 对照实现 + golden tests
-- [ ] **P16-3** pp-db 教程章节（数据库原理 × pp-lang × Agent）
+- [x] **P16-1** 事务：BEGIN/COMMIT/ROLLBACK（数据库级 before-image UNDO）+ 单会话单写者表锁状态；明确不含 WAL/fsync 崩溃恢复
+- [x] **P16-2** `tools/ppdb-ref`：零依赖 Rust 语义对照 + golden tests（表/KV/Doc/索引/事务）
+- [x] **P16-3** pp-db 教程章节（数据库原理 × pp-lang × Agent）——Starlight 6 章正文 + 导览完成
 
 ## Phase 17 — 裸机部署（设计见 docs/baremetal.md）
 

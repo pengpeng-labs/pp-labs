@@ -46,17 +46,44 @@ fn mcp_run_tool(id: int, req: int, out: int) -> int {
         if (st < 0) {
             return mcp_emit(out, "sql: syntax error\n");
         }
-        /* db_parse_sql 返回 0=成功；语句类型在 db_stmt_type */
-        if (db_stmt_type == 0) {
+        if (db_stmt_is_tx()) {
+            switch db_stmt_kind {
+                DbStmtKind.Begin {
+                    if (db_tx_begin()) { return mcp_emit(out, "transaction begun\n"); }
+                    return mcp_emit(out, "transaction already active\n");
+                }
+                DbStmtKind.Commit {
+                    if (db_tx_commit()) { return mcp_emit(out, "transaction committed\n"); }
+                    return mcp_emit(out, "no active transaction\n");
+                }
+                DbStmtKind.Rollback {
+                    if (db_tx_rollback()) { return mcp_emit(out, "transaction rolled back\n"); }
+                    return mcp_emit(out, "no active transaction\n");
+                }
+                _ { return mcp_emit(out, "sql: unsupported\n"); }
+            }
+        }
+        if (db_stmt_is_create()) {
+            if (db_stmt_is_create_index()) {
+                let index_tid: int = db_find_table(int_to_ptr(db_stmt_table));
+                if (index_tid < 0) { return mcp_emit(out, "sql: no such table\n"); }
+                let index_col: int = db_col_idx(index_tid, db_stmt_cols[0]);
+                if (index_col < 0) { return mcp_emit(out, "sql: no such column\n"); }
+                if (db_index_create(db_stmt_index, index_tid, index_col) < 0) {
+                    return mcp_emit(out, "create index failed\n");
+                }
+                return mcp_emit(out, "index created\n");
+            }
             /* CREATE：tid=-1 需建表 */
             let r: int = db_create_table(int_to_ptr(db_stmt_table), db_stmt_coln,
                 db_stmt_types[0], db_stmt_types[1], db_stmt_types[2], db_stmt_types[3]);
             if (r >= 0) {
+                db_set_col_names(r, db_stmt_cols[0], db_stmt_cols[1], db_stmt_cols[2], db_stmt_cols[3]);
                 return mcp_emit(out, "table created\n");
             }
             return mcp_emit(out, "create failed\n");
         }
-        if (db_stmt_type == 5) {
+        if (db_stmt_is_drop()) {
             /* DROP */
             let tid5: int = db_find_table(int_to_ptr(db_stmt_table));
             if (tid5 >= 0) {
@@ -69,23 +96,22 @@ fn mcp_run_tool(id: int, req: int, out: int) -> int {
         if (tid < 0) {
             return mcp_emit(out, "sql: no such table\n");
         }
-        if (db_stmt_type == 2) {
-            /* SELECT：结果写缓冲返回 */
-            return db_select_to_buf(tid, out);
+        switch db_stmt_kind {
+            DbStmtKind.Select { return db_select_to_buf(tid, out, 3072); }
+            DbStmtKind.Insert {
+                db_exec_insert(tid);
+                return mcp_emit(out, "1 row inserted\n");
+            }
+            DbStmtKind.Update {
+                db_exec_update(tid);
+                return mcp_emit(out, "updated\n");
+            }
+            DbStmtKind.Delete {
+                db_exec_delete(tid);
+                return mcp_emit(out, "deleted\n");
+            }
+            _ { return mcp_emit(out, "sql: unsupported\n"); }
         }
-        if (db_stmt_type == 1) {
-            db_exec_insert(tid);
-            return mcp_emit(out, "1 row inserted\n");
-        }
-        if (db_stmt_type == 3) {
-            db_exec_update(tid);
-            return mcp_emit(out, "updated\n");
-        }
-        if (db_stmt_type == 4) {
-            db_exec_delete(tid);
-            return mcp_emit(out, "deleted\n");
-        }
-        return mcp_emit(out, "sql: unsupported\n");
     }
     /* kv 工具：参数 {"op":"get|put|del","key":"...","value":"..."} */
     if (id == 2) {

@@ -5,20 +5,35 @@ table created
 1 row inserted
 1 row inserted
 1 row inserted
-c0 c1
+index created
+id msg
 1 hello
 2 world
 3 pp-db
 (N rows)
-c0 c1
+id msg
 2 world
 (N rows)
-c0 c1
+id msg
 (N rows)
-c0
+[{"msg":"world","id":2}]
+transaction begun
+kv put ok
+1 row inserted
+transaction rolled back
+kv: not found
+id msg
 (N rows)
+transaction begun
+1 row inserted
+transaction committed
+id msg
+4 committed
+(N rows)
+sql: no such column
 sql: no such table
-sql: only CREATE/INSERT/SELECT
+sql: syntax error
+sql: syntax error
 kv put ok
 kv: dark
 kv put ok
@@ -34,9 +49,10 @@ doc: {"a":2,"b":3}
 doc: not found
 doc put ok
 doc: [1,2,3]
-db saved (2060 bytes)
+db saved (2488 bytes)
 notes
 empty
 dup
-pp-db CLI: sql <SQL> | kv get|put|del <k> [v] | doc get|put <name> [json] | save|load <file> | tables | quit
+notes_id notes.id
+pp-db CLI: sql <SQL> | kv get|put|del <k> [v] | doc get|put <name> [json] | save|load <file> | tables|indexes | quit
 unknown command (help for usage)

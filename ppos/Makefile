@@ -9,7 +9,7 @@ QEMU    = qemu-system-x86_64
 all: kernel.elf
 
 # ---- 阶段 1：64 位内核（entry64 固定在 0x200000）----
-kernel.o: kernel.pp fs.pp net.pp tls.pp json.pp agent.pp browser.pp app.pp mcp.pp wasm.pp ../ppdb/db_core.pp ../ppdb/host_ppos.pp ../ppdb/host_file_ppos.pp ../ppdb/db_sql_parse.pp ../ppdb/db_sql_exec.pp ../ppdb/db_kv.pp ../ppdb/db_doc.pp ../ppdb/db_persist.pp
+kernel.o: kernel.pp fs.pp net.pp tls.pp json.pp agent.pp browser.pp app.pp mcp.pp wasm.pp ../ppdb/db_core.pp ../ppdb/host_ppos.pp ../ppdb/host_file_ppos.pp ../ppdb/db_sql_parse.pp ../ppdb/db_sql_exec.pp ../ppdb/db_kv.pp ../ppdb/db_doc.pp ../ppdb/db_tx.pp ../ppdb/db_persist.pp
 	$(PP) os kernel.pp -o kernel.o
 
 boot/boot64.o: boot/boot64.S

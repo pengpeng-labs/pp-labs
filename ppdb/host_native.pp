@@ -19,7 +19,8 @@ fn db_page_alloc() -> int {
 }
 
 fn db_page_ptr(n: int) -> u64 {
-    return ptr_to_int(&db_pages[0]) + n * DB_PAGE_SIZE;
+    /* 页号 0 是链尾哨兵；物理页区从逻辑页 1 开始连续存放。 */
+    return ptr_to_int(&db_pages[0]) + (n - 1) * DB_PAGE_SIZE;
 }
 
 fn db_page_dirty(n: int) {

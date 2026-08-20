@@ -5,6 +5,7 @@
      hf_write(idx: int, data: u64, len: int)    从开头写（截断语义）
      hf_write_at(idx: int, data: u64, len: int, off: int)  偏移写
      hf_read_at(idx: int, buf: u64, len: int, off: int) -> int  区间读，返回实际字节数
+     hf_close(idx: int)                    关闭句柄
    idx 即 POSIX fd；数据指针用 u64（宿主机静态地址 >4GB 无损）。
    文本路径使用 str（FFI 时传 ptr），任意二进制缓冲使用裸指针 *u8。 */
 
@@ -53,9 +54,17 @@ fn hf_write_at(idx: int, data: u64, len: int, off: int) {
 
 fn hf_read_at(idx: int, buf: u64, len: int, off: int) -> int {
     lseek(idx, off, 0);
-    let r: int = read(idx, buf as *u8, len);
-    if (r < 0) {
-        return 0;
+    let total: int = 0;
+    while (total < len) {
+        let r: int = read(idx, (buf + total) as *u8, len - total);
+        if (r <= 0) {
+            return total;
+        }
+        total = total + r;
     }
-    return r;
+    return total;
+}
+
+fn hf_close(idx: int) {
+    close(idx);
 }
