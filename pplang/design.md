@@ -70,6 +70,87 @@
 | 类型不匹配报错 | 现在静默 coerce 藏隐患 | 编译错误 |
 | 同名函数重定义报错 | spec §7 已记录，补上 | 编译错误 |
 
+### 第四层：机制借鉴（候选未落地）
+
+> ⚠️ 候选（2026-08 讨论）。两条来源：Lua 的"少 feature，多 mechanism"（table + 元方法顶了数组/字典/对象/继承/运算符重载）；TAPL 的"低阶高价值"特性（sum type 是 record 的对偶，比泛型便宜一个数量级）。pp 只借思想，不抄语法与运行时。
+
+依赖链（顺序不可乱）：`多返回值（编译器）→ StrMap（标准库）→ 接口统一（先软后硬）`。
+
+| 项 | 方案 | 成本 | 状态 |
+|----|------|------|------|
+| **多返回值** `(T1,T2)` | `fn f() -> (bool,int)` 脱糖成匿名 struct，编译期打包/拆包（Go 同款 ABI） | 纯编译器（ast `Type::Tuple` + `fn_type`/`Return`/`Call`/`Let` 四处） | ⚠️ 候选，**进 roadmap 首选** |
+| **Sum Type** `enum` + 精简 `switch` | tag + payload + 穷尽性检查，见 §4.1 | 两个关键字 + tag 编号/穷尽性检查/跳转表，接近 record | ⚠️ 候选，**优先级高于泛型** |
+| **关联容器** `StrMap` | 标准库开放寻址哈希，键值都 `str`，见 §6.4 | 纯 `.pp`，零编译器改动 | ⚠️ 候选 |
+| **接口统一** | 先"软统一"（API 命名 `has/get/len` 对齐 str 切片）；"硬统一"（`m[k]`/`k in m`/`len(m)` 直接作用）需元方法/编译期分发 | 软=零 / 硬=高 | 软随 StrMap 做，硬远期 |
+
+- **依赖**：多返回值是 StrMap 的前置——`map_get` 无多返回值只能"空串当哨兵"，无法区分"值是空串"与"没找到"；`-> (bool, str)` 才无歧义。
+
+### 4.1 Sum Type / tagged union（TAPL/OCaml 启发，候选）
+
+ppdb 的 SQL/JSON/KV 值本质是"一个值可能是 int/str/float/bool"；现在只能用 `struct { tag: int, ... }` 手写，又丑又不安全（tag 和字段对不上没人管）。Sum type = 编译器自动维护 tag 的"或"类型，是 record 的对偶（TAPL 第 11 章），成本远低于泛型。
+
+**取舍（借思想、减语法）**：
+
+| OCaml 能力 | 借不借 | 理由 |
+|-----------|-------|------|
+| tag + payload 内存布局 | ✅ 照搬 | 零魔法，编译期编号 + 存 payload |
+| match → 跳转表 | ✅ 照搬 | switch on tag，零运行时开销 |
+| 穷尽性检查 | ✅ 必借 | sum type 的命根子，没有就退回手写 tag |
+| 单 payload 构造子 | ✅ 借 | `Int(int)` 简单 |
+| 多参数构造子 `C of int*str` | ❌ 砍 | 无 tuple，多 payload 用 struct 装 |
+| 嵌套模式 `Some(x,y)` / `x::xs` | ❌ 砍 | 只做一层解构 |
+| 守卫 `when` | ❌ 砍 | 用 `if` 替代 |
+| 通配 `_` | ✅ 借 | 穷尽性的兜底 |
+| 完整 `match` 语法 | ❌ 砍 | §7 已定，换精简 `switch` |
+
+**语法形态**：
+
+```
+enum Value { Int(int), Str(str), Float(float), Bool(bool) }
+
+fn value_to_int(v: Value) -> int {
+    switch v {
+        Value.Int(i)   { return i; }
+        Value.Str(s)   { return str_len(s); }
+        Value.Float(f) { return f as int; }
+        Value.Bool(b)  { return if b { 1 } else { 0 }; }
+        _              { return 0; }
+    }
+}
+```
+
+- 保留四件 OCaml 血统：**穷尽性检查**（漏变体报错）、**单层解构**、**通配 `_`**、**编译期跳转表**。
+- 砍掉四件：多参数构造子、嵌套模式、守卫 `when`、完整 match。
+- 成本：`enum`/`switch` 两个关键字 + tag 编号 + 穷尽性检查 + 跳转表——接近 record，远低于泛型（不用 `[]T`、不用单态化）。
+- 历史定位：源自 ML（Robin Milner, 1973），经 OCaml/SML/Haskell 普及，现已是 Rust/Swift/TS/Kotlin/Python/Java 主流标配，仅 Go 缺失。
+
+### 4.2 泛型边界（Ada 借鉴，候选）
+
+泛型 = 两个独立需求：
+
+| 需求 | 例子 | Ada 怎么解 | pp 现状 |
+|------|------|-----------|--------|
+| (a) 类型参数化 | `Map<str,int>` vs `Map<int,int>` | 显式实例化 `is new` | ⚠️ 字节擦除/固定手写顶替 |
+| (b) 操作约束 | `T` 能比较/哈希 | 显式声明操作 `with function "<"` | ✅ 函数指针已完成 |
+
+**核心结论**：Ada 的"显式声明操作"降级成函数指针 = `fn sort(compare: fn(T,T)->bool)`，泛型体内写 `compare(a,b)` 而非 `a < b`。pp 的"显式"哲学更倾向后者，所以 **(b) 不需要任何泛型语法，函数指针就是 Ada 的降级版**。
+
+(a) 类型参数化 pplang 现在用两招顶替：固定类型手写（`StrMap`/`IntMap`，源码重复）+ 字节串擦除（int 序列化进 `str`，丢编译期类型检查）。
+
+**未来真上泛型**（触发：第 3+ 个容器且类型域超出字节/整数/指针），只抄 Ada 显式实例化：
+
+```
+Ada:  with function "<"(L,R:T) is <>      泛型体内写 a < b
+pp:   fn sort(a: T, compare: fn(T,T)->bool)  泛型体内写 compare(a,b)   // (b) 仍是函数指针
+
+Ada:  package Int_Sort is new Sorting(Integer)  // 显式实例化，无推导
+pp:   sort[int](...)                             // (a) 显式实例化
+```
+
+- 做：显式实例化（`sort[int]`）+ 显式声明操作（函数指针），无推导、无约束求解。
+- 不做：Go 类型集合（`T: Ordered` 白名单 + 推导是负担）、Rust trait（深水区）、Zig comptime（§7 已排除）。
+- 理由：Ada 的"显式 > 隐式"约束模型天生契合 pp 哲学，是"约束最强"里最轻的一条路；且 (b) 已被函数指针吃掉，剩下的 (a) 只在类型域真正变宽时才值当。
+
 ## 5. 指针与内存约束（核心章节）
 
 ### 5.1 病根：C 的指针"裸奔"
@@ -104,6 +185,7 @@ Zig 有 6 种指针（`*T`、`*const T`、`[*]T`、`[]T`、`?*T`、`[:0]T`），
 | 结构体 `struct` | 异类数据组合（值语义） | ✅ 已有，保持 |
 | 切片 `str` | 动态序列视图（`{ptr, len}`） | ✅ 已落地（`len()` O(1)、`s[a:b]` 切片、字面量带长） |
 | 动态数组 | 可增长序列 | ✅ **要，但用标准库实现**（简单版 ArrayList，非语言内建） |
+| 关联容器 `StrMap` | 键值映射（哈希表） | ⚠️ 候选，标准库实现（见 §6.4），键值都 `str` |
 
 ### 6.1 为什么切片是核心、且要"无借用"
 
@@ -143,6 +225,28 @@ fn buf_free(b: *Buf)         // 释放
 
 3. **动态数组 = 可增长的切片**：内部 `{ptr, len, cap}`，比切片多一个 `cap`，`len` 追上 `cap` 就扩容。本质是切片语法的延伸，两者同源。
 
+### 6.4 关联容器：字节串 `StrMap`（标准库，候选）
+
+pp 无泛型、无 GC、无动态类型，做不了 Lua 万能 table（`Map<K,V>`），只能退到标准库固定类型。序列侧已有 str/Buf，关联侧是空白——ppdb 索引（SkipList/B+树）手写的痛点根源即此。
+
+定案：**方案 A 字节串统一**（与 Buf 同源，`{ptr,len,cap}` + alloc 翻倍）：
+
+```
+struct MapSlot { key: str, val: str, used: bool }   // used = 开放寻址墓碑
+struct StrMap  { slots: *MapSlot, len: int, cap: int }
+
+fn map_new()  -> StrMap
+fn map_set(m: *StrMap, k: str, v: str)
+fn map_get(m: *StrMap, k: str) -> (bool, str)   // (found, val)，依赖多返回值
+fn map_has(m: *StrMap, k: str) -> bool
+fn map_del(m: *StrMap, k: str)
+fn map_free(m: *StrMap)
+```
+
+- 哈希：FNV-1a，开放寻址，负载因子 0.7 扩容。
+- int 键/值：序列化成 8 字节定长串（嵌入式数据库本就把一切当字节）。
+- 排除：`*u8` + 函数指针回调（类型擦除丢安全）、手写 N 套（代码重复）——均不选。
+
 ## 7. 明确不做（边界）
 
 - ❌ 所有权 / borrow checker（Rust 最痛的点）
@@ -152,6 +256,7 @@ fn buf_free(b: *Buf)         // 释放
 - ❌ 闭包 / 异步 / 异常 / 宏
 - ❌ `comptime` 元编程（Zig 的深水区）
 - ❌ 多态 / 子类型 / 递归类型 / HM 推断（TAPL 主线，超纲）
+- ❌ Lua 万能 table / metatable 运行时反射（需动态类型 + GC + 运行时哈希，照搬=重造 Lua；关联容器走标准库 `StrMap` 见 §6.4）
 
 ## 8. 落地顺序建议
 
