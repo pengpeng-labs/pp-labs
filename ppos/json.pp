@@ -160,7 +160,7 @@ fn json_find_str(src: int, key: str, out: int) -> int {
                     if (volatile_load8(src + j) == 34) {   /* '"' */
                         j = j + 1;
                         let o: int = 0;
-                        while (1) {
+                        while (true) {
                             let c: int = volatile_load8(src + j);
                             if (c == 92) {   /* '\' 转义 */
                                 let e: int = volatile_load8(src + j + 1);

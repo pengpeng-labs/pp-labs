@@ -218,6 +218,19 @@
 
 每步落地 + 回归 `pp ir/run/build/obj/os` + pp-os/pp-db 测试。
 
+## Phase 19 — pplang v0.2：语义收口 + 实用机制
+
+- [x] **L4-0** 编译器黑盒回归测试 + 小型 `sema.rs`（名字/作用域/调用/返回/基础类型）
+- [x] **L4-1** 无符号除法/余数/比较 + `if/while` 严格 bool + block shadowing
+- [x] **L4-2** 移除旧 `[T; N]` 语法；`str` 长度语义、extern 返回边界、切片运行时边界检查
+- [x] **L4-3** struct 字段左值 + `*Struct` 字段访问 + 指针接收者方法自动取址
+- [x] **L4-4** 受限 tuple：类型/值/返回/`let (a,b)` 解构（无嵌套解构、无 extern tuple）
+- [x] **L4-5** `stdlib/buf.pp` 可增长字节缓冲
+- [x] **L4-6** `stdlib/strmap.pp`（FNV-1a + 开放寻址 + 扩容 + owned key/value）
+- [ ] **L5-1** Sum Type：`enum` + 精简 `switch` + 单层解构 + 穷尽性检查
+
+每项验收：`cargo test` + `pp ir/run/build/obj/os` + pp-db golden/持久化 + pp-os 全量重建。
+
 ---
 
 ## 明确不做 / 边界

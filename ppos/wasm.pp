@@ -9,7 +9,7 @@ fn wasm_uleb(src: int, pos: int) -> int {
     let result: int = 0;
     let shift: int = 0;
     let i: int = pos;
-    while (1) {
+    while (true) {
         let b: int = volatile_load8(src + i);
         result = result | ((b & 127) << shift);
         if ((b & 128) == 0) {
@@ -27,7 +27,7 @@ fn wasm_sleb(src: int, pos: int) -> int {
     let shift: int = 0;
     let i: int = pos;
     let b: int = 0;
-    while (1) {
+    while (true) {
         b = volatile_load8(src + i);
         result = result | ((b & 127) << shift);
         shift = shift + 7;

@@ -29,7 +29,7 @@ fn web_fetch(host: str) -> int {
         let part: int = 0;
         let oc: int = 0;
         let hi: int = 0;
-        while (1) {
+        while (true) {
             let c: int = volatile_load8(ptr_to_int(host + hi));
             if (c >= 48 && c <= 57) {
                 part = part * 10 + (c - 48);

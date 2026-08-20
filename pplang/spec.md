@@ -1,6 +1,6 @@
 # pp-lang 语言规范（spec）
 
-> 状态：**草案 / 待填充（TODO）**。本文件是语言、教程第 0 章、以及喂给 LLM 的上下文三者的唯一权威来源。
+> 状态：**v0.2 草案**。本文件是语言、教程第 0 章、以及喂给 LLM 的上下文三者的唯一权威来源。
 > 约定：扩展名 `.pp`，编译器 `pp`。
 
 ## 1. 定位
@@ -28,12 +28,15 @@ param       = ident ":" type ;
 struct_decl = "struct" ident "{" { field } "}" ;
 block       = "{" { stmt } "}" ;
 stmt        = let_stmt | if_stmt | while_stmt | for_stmt | defer_stmt | return_stmt | expr_stmt ;
+let_stmt    = "let" ( ident [ ":" type ] | "(" ident "," ident { "," ident } ")" )
+              [ "=" expr ] ";" ;
 for_stmt    = "for" ident "in" expr block ;
 defer_stmt  = "defer" expr ";" ;                    (* 函数退出点 LIFO 执行 *)
 type        = "int" | "float" | "bool" | "str" | "u8" | "u16" | "u32" | "u64"
             | "[" int "]" type               (* 定长数组 [N]T，长度前置 *)
             | "*" type                        (* 裸指针 *)
             | "fn" "(" [ types ] ")" [ "->" type ]   (* 函数指针 *)
+            | "(" type "," type { "," type } ")"     (* tuple，至少两个元素 *)
             | ident                          (* 结构体名 *)
             ;
 ```
@@ -54,8 +57,10 @@ call        = ident "(" [ args ] ")" ;                    (* len(x) 等内建 *)
 
 - 基础类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr, len}` 字节切片，字面量带长) `u8/u16/u32/u64`
 - 复合类型：`struct`（值语义）、`[N]T` 定长数组（长度前置 Go/Zig 式）、`fn(...) -> ret` 函数指针
+- tuple：`(T1,T2,...)`，用于值、函数返回与 `let (a,b) = f()` 解构；不支持嵌套解构/下标，extern 禁止 tuple
 - 系统层类型（§6）：`*T` 裸指针
 - 内建：`len(x)`（str 返回运行时长度 i64，数组返回编译期长度）；切片 `s[a:b]`/`s[a:]`/`s[:b]`/`s[:]` 产生新 `str` 视图
+- `str_from_ptr(ptr,len)` 从裸缓冲构造视图，`str_ptr(s)` 提取 `*u8`；二者都不转移或管理所有权
 
 TODO：类型规则、隐式/显式转换、字面量类型。
 
@@ -74,9 +79,12 @@ TODO：类型规则、隐式/显式转换、字面量类型。
 
 ## 7. 语义
 
-- 作用域与可见性（TODO）
-- 求值顺序（TODO）
-- 调用约定（TODO）
+- 词法作用域：函数体与每个 block 建立作用域；允许内层 shadowing，离开 block 后恢复外层绑定
+- 条件：`if`/`while` 只接受 `bool`，整数必须显式比较（如 `x != 0`）
+- 整数：`int` 是有符号 i32；`u8/u16/u32/u64` 的除法、余数和顺序比较使用无符号语义
+- 求值顺序：表达式与函数实参从左到右求值（待增加更完整的规范示例）
+- 调用约定：内部 aggregate（`str`/struct/tuple）交给 LLVM 目标 ABI；extern `str` 参数降为指针，extern 不得返回无长度的 `str`
+- 切片：`0 <= lo <= hi <= len(s)`，违反边界时触发 trap
 - 内存模型：核心子集栈 + 值语义；堆仅在 std-lib 提供显式 allocator
 
 ### 已知编译器问题（已修复）

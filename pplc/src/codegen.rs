@@ -35,7 +35,6 @@ pub struct Codegen<'ctx> {
     func_params: HashMap<String, Vec<Type>>,
     cur_ret: Option<BasicTypeEnum<'ctx>>,
     loop_stack: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
-    let_prealloc: HashMap<String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
     defer_stack: Vec<Expr>,
     str_type: StructType<'ctx>,
 }
@@ -62,7 +61,6 @@ impl<'ctx> Codegen<'ctx> {
             func_params: HashMap::new(),
             cur_ret: None,
             loop_stack: Vec::new(),
-            let_prealloc: HashMap::new(),
             defer_stack: Vec::new(),
             str_type,
         }
@@ -93,13 +91,6 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
-    fn struct_name_for_type(&self, st: StructType<'ctx>) -> Option<String> {
-        self.struct_types
-            .iter()
-            .find(|(_, t)| **t == st)
-            .map(|(n, _)| n.clone())
-    }
-
     fn type_to_basic(&self, t: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match t {
             Type::Int => Ok(self.context.i32_type().into()),
@@ -116,6 +107,11 @@ impl<'ctx> Codegen<'ctx> {
             }
             Type::Fn(_, _) => Ok(self.context.ptr_type(AddressSpace::default()).into()),
             Type::Ptr(_) => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+            Type::Tuple(elements) => {
+                let fields: Result<Vec<_>, _> =
+                    elements.iter().map(|element| self.type_to_basic(element)).collect();
+                Ok(self.context.struct_type(&fields?, false).into())
+            }
             Type::Named(name) => self
                 .struct_types
                 .get(name)
@@ -254,6 +250,11 @@ impl<'ctx> Codegen<'ctx> {
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into()),
+            Type::Tuple(elements) => {
+                let fields: Result<Vec<_>, _> =
+                    elements.iter().map(|element| self.type_to_basic(element)).collect();
+                Ok(self.context.struct_type(&fields?, false).const_zero().into())
+            }
             Type::Str => Ok(self.str_type.const_zero().into()),
             Type::Named(name) => {
                 let st = self
@@ -337,6 +338,35 @@ impl<'ctx> Codegen<'ctx> {
             Ok((a, b2))
         }
     }
+
+    fn is_unsigned_type(ty: &Type) -> bool {
+        matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64)
+    }
+
+    fn integer_width(ty: &Type) -> Option<u32> {
+        match ty {
+            Type::Bool => Some(1),
+            Type::U8 => Some(8),
+            Type::U16 => Some(16),
+            Type::Int | Type::U32 => Some(32),
+            Type::U64 => Some(64),
+            _ => None,
+        }
+    }
+
+    fn common_integer_type(left: &Type, right: &Type) -> Type {
+        let width = Self::integer_width(left)
+            .unwrap_or(32)
+            .max(Self::integer_width(right).unwrap_or(32));
+        let unsigned = Self::is_unsigned_type(left) || Self::is_unsigned_type(right);
+        match (width, unsigned) {
+            (0..=8, true) => Type::U8,
+            (9..=16, true) => Type::U16,
+            (17..=32, true) => Type::U32,
+            (_, true) => Type::U64,
+            _ => Type::Int,
+        }
+    }
     pub fn compile_function(&mut self, func: &Function) -> Result<FunctionValue<'ctx>, String> {
         if let Some(existing) = self.module.get_function(&func.proto.name) {
             if existing.count_basic_blocks() > 0 {
@@ -347,7 +377,9 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
         self.named_values.clear();
-        self.let_prealloc.clear();
+        let global_names: Vec<String> = self.globals.keys().cloned().collect();
+        self.var_types
+            .retain(|name, _| global_names.iter().any(|global| global == name));
         self.defer_stack.clear();
         let llvm_fn = self.declare_prototype(&func.proto, false)?;
         self.cur_ret = match &func.proto.ret {
@@ -368,9 +400,6 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        // 预扫描：所有 `let` 的 alloca 统一建在入口块（避免循环体内每迭代动态分配栈）。
-        self.prescan_lets(&func.body.stmts)?;
-
         for stmt in &func.body.stmts {
             self.compile_stmt(stmt)?;
         }
@@ -388,51 +417,42 @@ impl<'ctx> Codegen<'ctx> {
         Ok(llvm_fn)
     }
 
-    /// 递归收集函数内所有 `let`，在入口块预建 alloca（保证栈帧静态固定，循环不泄漏栈）。
-    fn prescan_lets(&mut self, stmts: &[Stmt]) -> Result<(), String> {
-        for s in stmts {
-            match s {
-                Stmt::Let { name, ty, init } => {
-                    let ast_ty = match ty {
-                        Some(t) => t.clone(),
-                        None => match init {
-                            Some(e) => self.typeof_expr(e),
-                            None => return Err("let requires a type or initializer".to_string()),
-                        },
-                    };
-                    let alloc_ty = self.type_to_basic(&ast_ty)?;
-                    let alloca = b!(self.builder.build_alloca(alloc_ty, name));
-                    self.let_prealloc
-                        .entry(name.clone())
-                        .or_insert((alloca, alloc_ty));
-                    self.var_types.insert(name.clone(), ast_ty);
-                }
-                Stmt::If { then, els, .. } => {
-                    self.prescan_lets(&then.stmts)?;
-                    if let Some(e) = els {
-                        self.prescan_lets(&e.stmts)?;
-                    }
-                }
-                Stmt::While { body, .. } => {
-                    self.prescan_lets(&body.stmts)?;
-                }
-                Stmt::For { var, iter, body } => {
-                    let var_ty = match self.typeof_expr(iter) {
-                        Type::Array(elem, _) => *elem,
-                        _ => Type::Int,
-                    };
-                    let alloc_ty = self.type_to_basic(&var_ty)?;
-                    let alloca = b!(self.builder.build_alloca(alloc_ty, var));
-                    self.let_prealloc
-                        .entry(var.clone())
-                        .or_insert((alloca, alloc_ty));
-                    self.var_types.insert(var.clone(), var_ty);
-                    self.prescan_lets(&body.stmts)?;
-                }
-                _ => {}
-            }
+    /// 在函数入口块创建唯一 alloca，避免循环体内重复增长栈。
+    fn create_entry_alloca(
+        &self,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let current = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "alloca outside function".to_string())?;
+        let function = current
+            .get_parent()
+            .ok_or_else(|| "alloca outside function".to_string())?;
+        let entry = function
+            .get_first_basic_block()
+            .ok_or_else(|| "function has no entry block".to_string())?;
+        if let Some(first) = entry.get_first_instruction() {
+            self.builder.position_before(&first);
+        } else {
+            self.builder.position_at_end(entry);
         }
-        Ok(())
+        let alloca = b!(self.builder.build_alloca(ty, name));
+        self.builder.position_at_end(current);
+        Ok(alloca)
+    }
+
+    fn compile_scoped_block(&mut self, block: &Block) -> Result<(), String> {
+        let saved_values = self.named_values.clone();
+        let saved_types = self.var_types.clone();
+        let result = block
+            .stmts
+            .iter()
+            .try_for_each(|stmt| self.compile_stmt(stmt));
+        self.named_values = saved_values;
+        self.var_types = saved_types;
+        result
     }
 
     /// 按 LIFO 执行 defer 语句（函数退出点调用）。
@@ -495,6 +515,12 @@ impl<'ctx> Codegen<'ctx> {
                     .const_null();
                 b!(self.builder.build_return(Some(&null)));
             }
+            Type::Tuple(elements) => {
+                let fields: Result<Vec<_>, _> =
+                    elements.iter().map(|element| self.type_to_basic(element)).collect();
+                let zero = self.context.struct_type(&fields?, false).const_zero();
+                b!(self.builder.build_return(Some(&zero)));
+            }
             Type::Str => {
                 let z = self.str_type.const_zero();
                 b!(self.builder.build_return(Some(&z)));
@@ -535,35 +561,14 @@ impl<'ctx> Codegen<'ctx> {
                 self.compile_expr(e)?;
             }
             Stmt::Let { name, ty, init } => {
-                let pre = self.let_prealloc.get(name).copied();
-                let (alloca, alloc_ty) = if let Some((ptr, slot_ty)) = pre {
-                    /* 同名同类型复用；显式类型不同（不同作用域）则新建独立 alloca */
-                    let mismatch = match ty {
-                        Some(t) => match self.type_to_basic(t) {
-                            Ok(bt) => bt != slot_ty,
-                            Err(_) => false,
-                        },
-                        None => false,
-                    };
-                    if mismatch {
-                        self.let_prealloc.remove(name);
-                        let alloc_ty = self.type_to_basic(ty.as_ref().unwrap())?;
-                        let alloca = b!(self.builder.build_alloca(alloc_ty, name));
-                        (alloca, alloc_ty)
-                    } else {
-                        (ptr, slot_ty)
-                    }
-                } else {
-                    let alloc_ty = match ty {
-                        Some(t) => self.type_to_basic(t)?,
-                        None => match init {
-                            Some(e) => self.compile_expr(e)?.get_type(),
-                            None => return Err("let requires a type or initializer".to_string()),
-                        },
-                    };
-                    let alloca = b!(self.builder.build_alloca(alloc_ty, name));
-                    (alloca, alloc_ty)
+                let alloc_ty = match ty {
+                    Some(t) => self.type_to_basic(t)?,
+                    None => match init {
+                        Some(e) => self.compile_expr(e)?.get_type(),
+                        None => return Err("let requires a type or initializer".to_string()),
+                    },
                 };
+                let alloca = self.create_entry_alloca(alloc_ty, name)?;
                 let init_val = match init {
                     Some(e) => {
                         let v = self.compile_expr(e)?;
@@ -582,6 +587,28 @@ impl<'ctx> Codegen<'ctx> {
                     None => self.typeof_expr(init.as_ref().unwrap()),
                 };
                 self.var_types.insert(name.clone(), ast_ty);
+            }
+            Stmt::LetTuple { names, init } => {
+                let tuple_ty = match self.typeof_expr(init) {
+                    Type::Tuple(elements) => elements,
+                    _ => return Err("tuple binding requires tuple value".to_string()),
+                };
+                let value = match self.compile_expr(init)? {
+                    BasicValueEnum::StructValue(value) => value,
+                    _ => return Err("tuple binding requires tuple value".to_string()),
+                };
+                for (index, (name, ty)) in names.iter().zip(tuple_ty.iter()).enumerate() {
+                    let llvm_ty = self.type_to_basic(ty)?;
+                    let alloca = self.create_entry_alloca(llvm_ty, name)?;
+                    let element = b!(self.builder.build_extract_value(
+                        value,
+                        index as u32,
+                        "tupleelement"
+                    ));
+                    b!(self.builder.build_store(alloca, element));
+                    self.named_values.insert(name.clone(), (alloca, llvm_ty));
+                    self.var_types.insert(name.clone(), ty.clone());
+                }
             }
             Stmt::AssignIndex { lhs, value } => {
                 let (ptr, elem_ty) = self.compile_lvalue_addr(lhs)?;
@@ -628,21 +655,17 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn compile_cond(&self, cond: &Expr) -> Result<IntValue<'ctx>, String> {
+        if self.typeof_expr(cond) != Type::Bool {
+            return Err(format!(
+                "condition must be bool, got {:?}: {:?}",
+                self.typeof_expr(cond),
+                cond
+            ));
+        }
         let v = self.compile_expr(cond)?;
         match v {
-            BasicValueEnum::IntValue(iv) => {
-                if iv.get_type().get_bit_width() == 1 {
-                    Ok(iv)
-                } else {
-                    Ok(b!(self.builder.build_int_compare(
-                        IntPredicate::NE,
-                        iv,
-                        self.context.i32_type().const_int(0, false),
-                        "ifcond",
-                    )))
-                }
-            }
-            _ => Err("condition must be bool or int".to_string()),
+            BasicValueEnum::IntValue(iv) if iv.get_type().get_bit_width() == 1 => Ok(iv),
+            _ => Err("condition must be bool".to_string()),
         }
     }
 
@@ -667,9 +690,7 @@ impl<'ctx> Codegen<'ctx> {
 
         // then
         self.builder.position_at_end(then_bb);
-        for s in &then.stmts {
-            self.compile_stmt(s)?;
-        }
+        self.compile_scoped_block(then)?;
         if self
             .builder
             .get_insert_block()
@@ -681,9 +702,7 @@ impl<'ctx> Codegen<'ctx> {
         // else
         if let (Some(eb), Some(block)) = (else_bb, els) {
             self.builder.position_at_end(eb);
-            for s in &block.stmts {
-                self.compile_stmt(s)?;
-            }
+            self.compile_scoped_block(block)?;
             if self
                 .builder
                 .get_insert_block()
@@ -716,9 +735,7 @@ impl<'ctx> Codegen<'ctx> {
         // 循环体
         self.builder.position_at_end(body_bb);
         self.loop_stack.push((cond_bb, after_bb));
-        for s in &body.stmts {
-            self.compile_stmt(s)?;
-        }
+        self.compile_scoped_block(body)?;
         self.loop_stack.pop();
         if self
             .builder
@@ -734,11 +751,12 @@ impl<'ctx> Codegen<'ctx> {
 
     /// `for x in s` 循环：s 为数组（遍历元素）或 `range(n)`（遍历 0..n）。
     fn compile_for(&mut self, var: &str, iter: &Expr, body: &Block) -> Result<(), String> {
-        let (var_alloca, var_ty) = self
-            .let_prealloc
-            .get(var)
-            .copied()
-            .ok_or_else(|| "for loop variable not preallocated".to_string())?;
+        let var_ast_ty = match self.typeof_expr(iter) {
+            Type::Array(elem, _) => *elem,
+            _ => Type::Int,
+        };
+        let var_ty = self.type_to_basic(&var_ast_ty)?;
+        let var_alloca = self.create_entry_alloca(var_ty, var)?;
 
         let i32_ty = self.context.i32_type();
         let i_alloca = b!(self.builder.build_alloca(i32_ty, "fori"));
@@ -809,7 +827,10 @@ impl<'ctx> Codegen<'ctx> {
         // body
         self.builder.position_at_end(body_bb);
         self.loop_stack.push((cond_bb, after_bb));
+        let saved_values = self.named_values.clone();
+        let saved_types = self.var_types.clone();
         self.named_values.insert(var.to_string(), (var_alloca, var_ty));
+        self.var_types.insert(var.to_string(), var_ast_ty);
 
         let i_body = match b!(self.builder.build_load(i32_ty, i_alloca, "fori")) {
             BasicValueEnum::IntValue(iv) => iv,
@@ -831,6 +852,8 @@ impl<'ctx> Codegen<'ctx> {
         for s in &body.stmts {
             self.compile_stmt(s)?;
         }
+        self.named_values = saved_values;
+        self.var_types = saved_types;
         self.loop_stack.pop();
 
         // i = i + 1
@@ -915,7 +938,12 @@ impl<'ctx> Codegen<'ctx> {
         let i = self.load_int(i_alloca, "ini")?;
         let gep = b!(unsafe { self.builder.build_gep(elem_ty, arr_ptr, &[i], "inelem") });
         let elem_val = b!(self.builder.build_load(elem_ty, gep, "inval"));
-        let eq = self.compile_cmp(BinOp::Eq, lhs_val, elem_val)?;
+        let eq = self.compile_cmp(
+            BinOp::Eq,
+            lhs_val,
+            elem_val,
+            Self::is_unsigned_type(elem),
+        )?;
         let eq_i1 = match eq {
             BasicValueEnum::IntValue(iv) => iv,
             _ => return Err("membership comparison must be int".to_string()),
@@ -993,7 +1021,7 @@ impl<'ctx> Codegen<'ctx> {
             BasicValueEnum::IntValue(iv) => iv,
             _ => return Err("string char must be int".to_string()),
         };
-        let eq = self.compile_cmp(BinOp::Eq, lhs_val, c.into())?;
+        let eq = self.compile_cmp(BinOp::Eq, lhs_val, c.into(), true)?;
         let eq_i1 = match eq {
             BasicValueEnum::IntValue(iv) => iv,
             _ => return Err("membership comparison must be int".to_string()),
@@ -1092,6 +1120,32 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    fn emit_guard(&self, condition: IntValue<'ctx>, name: &str) -> Result<(), String> {
+        let current = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "runtime guard outside function".to_string())?;
+        let function = current
+            .get_parent()
+            .ok_or_else(|| "runtime guard outside function".to_string())?;
+        let ok = self.context.append_basic_block(function, &format!("{}ok", name));
+        let fail = self
+            .context
+            .append_basic_block(function, &format!("{}fail", name));
+        b!(self.builder.build_conditional_branch(condition, ok, fail));
+
+        self.builder.position_at_end(fail);
+        let trap = self.module.get_function("llvm.trap").unwrap_or_else(|| {
+            let ty = self.context.void_type().fn_type(&[], false);
+            self.module.add_function("llvm.trap", ty, None)
+        });
+        b!(self.builder.build_call(trap, &[], "trap"));
+        b!(self.builder.build_unreachable());
+
+        self.builder.position_at_end(ok);
+        Ok(())
+    }
+
     /// 函数指针间接调用：`fp(args)`，fp 为 `fn(...) -> ...` 类型变量。
     fn compile_indirect_call(
         &self,
@@ -1187,9 +1241,15 @@ impl<'ctx> Codegen<'ctx> {
                         return self.compile_ptr_arith(*op, rhs, lhs, false);
                     }
                 }
+                let left_ty = self.typeof_expr(lhs);
+                let right_ty = self.typeof_expr(rhs);
+                let unsigned = Self::is_unsigned_type(&Self::common_integer_type(
+                    &left_ty,
+                    &right_ty,
+                ));
                 let l = self.compile_expr(lhs)?;
                 let r = self.compile_expr(rhs)?;
-                self.compile_binary(*op, l, r)
+                self.compile_binary(*op, l, r, unsigned)
             }
             Expr::Unary { op, expr } => {
                 let v = self.compile_expr(expr)?;
@@ -1248,6 +1308,9 @@ impl<'ctx> Codegen<'ctx> {
                 None if callee == "int_to_ptr" || callee == "ptr_to_int" => {
                     self.compile_builtin_cast(callee, args)
                 }
+                None if callee == "str_from_ptr" || callee == "str_ptr" => {
+                    self.compile_builtin_str_view(callee, args)
+                }
                 None if callee == "len" => self.compile_builtin_len(args),
                 None if callee == "atomic_xchg" => self.compile_builtin_atomic_xchg(args),
                 None => {
@@ -1257,6 +1320,34 @@ impl<'ctx> Codegen<'ctx> {
                     Err(format!("unknown function '{}'", callee))
                 }
             },
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let params = self
+                    .func_params
+                    .get(method)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown method function '{}'", method))?;
+                let first = params
+                    .first()
+                    .ok_or_else(|| format!("method function '{}' has no receiver", method))?;
+                let receiver_ty = self.typeof_expr(receiver);
+                let first_arg = match first {
+                    Type::Ptr(inner) if **inner == receiver_ty => {
+                        Expr::AddrOf(receiver.clone())
+                    }
+                    _ => (**receiver).clone(),
+                };
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(first_arg);
+                call_args.extend(args.iter().cloned());
+                self.compile_expr(&Expr::Call {
+                    callee: method.clone(),
+                    args: call_args,
+                })
+            }
             Expr::StructInit { name, fields } => {
                 let st = self
                     .struct_types
@@ -1282,23 +1373,9 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 Ok(agg.as_basic_value_enum())
             }
-            Expr::Field { base, field } => {
-                let base_val = self.compile_expr(base)?;
-                let sv = match base_val {
-                    BasicValueEnum::StructValue(sv) => sv,
-                    _ => return Err("field access requires a struct value".to_string()),
-                };
-                let name = self
-                    .struct_name_for_type(sv.get_type())
-                    .ok_or_else(|| "unknown struct type".to_string())?;
-                let field_list = &self.struct_defs[&name];
-                let idx = field_list
-                    .iter()
-                    .position(|(n, _)| n == field)
-                    .ok_or_else(|| {
-                        format!("struct '{}' has no field '{}'", name, field)
-                    })? as u32;
-                Ok(b!(self.builder.build_extract_value(sv, idx, "fieldtmp")))
+            Expr::Field { .. } => {
+                let (ptr, field_ty) = self.compile_lvalue_addr(expr)?;
+                Ok(b!(self.builder.build_load(field_ty, ptr, "fieldtmp")))
             }
             Expr::Index { .. } => {
                 let (ptr, elem_ty) = self.compile_lvalue_addr(expr)?;
@@ -1328,6 +1405,27 @@ impl<'ctx> Codegen<'ctx> {
                     Some(e) => coerce_idx(self.compile_expr(e)?)?,
                     None => len,
                 };
+                let lo_ok = b!(self.builder.build_int_compare(
+                    IntPredicate::ULE,
+                    lo_i,
+                    len,
+                    "slicelo"
+                ));
+                let hi_ok = b!(self.builder.build_int_compare(
+                    IntPredicate::ULE,
+                    hi_i,
+                    len,
+                    "slicehi"
+                ));
+                let order_ok = b!(self.builder.build_int_compare(
+                    IntPredicate::ULE,
+                    lo_i,
+                    hi_i,
+                    "sliceorder"
+                ));
+                let bounds_ok = b!(self.builder.build_and(lo_ok, hi_ok, "slicebounds"));
+                let bounds_ok = b!(self.builder.build_and(bounds_ok, order_ok, "slicevalid"));
+                self.emit_guard(bounds_ok, "slice")?;
                 let new_len = b!(self.builder.build_int_sub(hi_i, lo_i, "slicelen"));
                 let gep = b!(unsafe {
                     self.builder.build_gep(self.context.i8_type(), ptr, &[lo_i], "sliceptr")
@@ -1349,6 +1447,26 @@ impl<'ctx> Codegen<'ctx> {
                         .build_insert_value(agg, v, i as u32, "arrlit"));
                 }
                 Ok(agg.as_basic_value_enum())
+            }
+            Expr::Tuple(values) => {
+                if values.len() < 2 {
+                    return Err("tuple requires at least two values".to_string());
+                }
+                let types: Vec<Type> = values.iter().map(|value| self.typeof_expr(value)).collect();
+                let fields: Result<Vec<_>, _> =
+                    types.iter().map(|ty| self.type_to_basic(ty)).collect();
+                let tuple_type = self.context.struct_type(&fields?, false);
+                let mut aggregate: AggregateValueEnum<'ctx> = tuple_type.const_zero().into();
+                for (index, value) in values.iter().enumerate() {
+                    let compiled = self.compile_expr(value)?;
+                    aggregate = b!(self.builder.build_insert_value(
+                        aggregate,
+                        compiled,
+                        index as u32,
+                        "tuplevalue"
+                    ));
+                }
+                Ok(aggregate.as_basic_value_enum())
             }
             Expr::AddrOf(e) => {
                 if let Expr::Var(name) = e.as_ref() {
@@ -1415,6 +1533,25 @@ impl<'ctx> Codegen<'ctx> {
                 Type::Str => Type::U8,
                 _ => Type::Int,
             },
+            Expr::Field { base, field } => {
+                let name = match self.typeof_expr(base) {
+                    Type::Named(name) => Some(name),
+                    Type::Ptr(inner) => match *inner {
+                        Type::Named(name) => Some(name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                name.and_then(|name| {
+                    self.struct_defs.get(&name).and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|(candidate, _)| candidate == field)
+                            .map(|(_, ty)| ty.clone())
+                    })
+                })
+                .unwrap_or(Type::Int)
+            }
             Expr::Slice { .. } => Type::Str,
             Expr::ArrayLit(elems) => {
                 if elems.is_empty() {
@@ -1423,10 +1560,15 @@ impl<'ctx> Codegen<'ctx> {
                     Type::Array(Box::new(self.typeof_expr(&elems[0])), elems.len())
                 }
             }
+            Expr::Tuple(values) => Type::Tuple(
+                values
+                    .iter()
+                    .map(|value| self.typeof_expr(value))
+                    .collect(),
+            ),
             Expr::Binary { op, lhs, rhs } => {
                 let lt = self.typeof_expr(lhs);
                 let rt = self.typeof_expr(rhs);
-                let is_u64 = lt == Type::U64 || rt == Type::U64;
                 match op {
                     BinOp::Add | BinOp::Sub => {
                         if matches!(lt, Type::Ptr(_) | Type::Str) {
@@ -1435,22 +1577,26 @@ impl<'ctx> Codegen<'ctx> {
                             rt
                         } else if lt == Type::Float || rt == Type::Float {
                             Type::Float
-                        } else if is_u64 {
-                            Type::U64
                         } else {
-                            Type::Int
+                            Self::common_integer_type(&lt, &rt)
                         }
                     }
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                    BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Le
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or
+                    | BinOp::In => {
                         Type::Bool
                     }
                     _ => {
                         if lt == Type::Float || rt == Type::Float {
                             Type::Float
-                        } else if is_u64 {
-                            Type::U64
                         } else {
-                            Type::Int
+                            Self::common_integer_type(&lt, &rt)
                         }
                     }
                 }
@@ -1465,6 +1611,8 @@ impl<'ctx> Codegen<'ctx> {
                 "int_to_ptr" => Type::Str,
                 "ptr_to_int" => Type::U64,
                 "volatile_load64" => Type::U64,
+                "str_from_ptr" => Type::Str,
+                "str_ptr" => Type::Ptr(Box::new(Type::U8)),
                 _ => {
                     if let Some(Type::Fn(_, ret)) = self.var_types.get(callee) {
                         (**ret).clone()
@@ -1473,6 +1621,9 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 }
             },
+            Expr::MethodCall { method, .. } => {
+                self.func_rets.get(method).cloned().unwrap_or(Type::Int)
+            }
             _ => Type::Int,
         }
     }
@@ -1535,6 +1686,49 @@ impl<'ctx> Codegen<'ctx> {
                     }
                     _ => Err("indexing requires an array or pointer".to_string()),
                 }
+            }
+            Expr::Field { base, field } => {
+                let base_ast_ty = self.typeof_expr(base);
+                let name = match &base_ast_ty {
+                    Type::Named(name) => name.clone(),
+                    Type::Ptr(inner) => match inner.as_ref() {
+                        Type::Named(name) => name.clone(),
+                        _ => return Err("field access requires a struct".to_string()),
+                    },
+                    _ => return Err("field access requires a struct".to_string()),
+                };
+                let fields = self
+                    .struct_defs
+                    .get(&name)
+                    .ok_or_else(|| format!("unknown struct '{}'", name))?;
+                let index = fields
+                    .iter()
+                    .position(|(candidate, _)| candidate == field)
+                    .ok_or_else(|| format!("struct '{}' has no field '{}'", name, field))?;
+                let field_ty = self.type_to_basic(&fields[index].1)?;
+                let struct_ty = self.struct_types[&name];
+                let base_ptr = match base_ast_ty {
+                    Type::Named(_) => self.compile_lvalue_addr(base)?.0,
+                    Type::Ptr(_) => match self.compile_expr(base)? {
+                        BasicValueEnum::PointerValue(ptr) => ptr,
+                        _ => return Err("field base must be a struct pointer".to_string()),
+                    },
+                    _ => unreachable!(),
+                };
+                let zero = self.context.i32_type().const_int(0, false);
+                let field_index = self
+                    .context
+                    .i32_type()
+                    .const_int(index as u64, false);
+                let ptr = b!(unsafe {
+                    self.builder.build_gep(
+                        struct_ty,
+                        base_ptr,
+                        &[zero, field_index],
+                        "fieldptr",
+                    )
+                });
+                Ok((ptr, field_ty))
             }
             Expr::Deref(e) => {
                 let ptr = self.compile_expr(e)?;
@@ -1892,6 +2086,54 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    fn compile_builtin_str_view(
+        &self,
+        callee: &str,
+        args: &[Expr],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        match callee {
+            "str_ptr" => {
+                if args.len() != 1 {
+                    return Err("str_ptr(s) takes 1 argument".to_string());
+                }
+                let value = self.compile_expr(&args[0])?;
+                Ok(self.str_ptr(value)?.into())
+            }
+            "str_from_ptr" => {
+                if args.len() != 2 {
+                    return Err("str_from_ptr(ptr, len) takes 2 arguments".to_string());
+                }
+                let pointer = match self.compile_expr(&args[0])? {
+                    BasicValueEnum::PointerValue(pointer) => pointer,
+                    other => self.str_ptr(other)?,
+                };
+                let length = match self.compile_expr(&args[1])? {
+                    BasicValueEnum::IntValue(value) => {
+                        let width = value.get_type().get_bit_width();
+                        if width < 64 {
+                            b!(self.builder.build_int_z_extend(
+                                value,
+                                self.context.i64_type(),
+                                "strlen64"
+                            ))
+                        } else if width > 64 {
+                            b!(self.builder.build_int_truncate(
+                                value,
+                                self.context.i64_type(),
+                                "strlen64"
+                            ))
+                        } else {
+                            value
+                        }
+                    }
+                    _ => return Err("str_from_ptr length must be an integer".to_string()),
+                };
+                Ok(self.make_str_v(pointer, length))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     /// 内置原子交换：`atomic_xchg(addr, value) -> int`（xchg，返回旧值，自旋锁用）。
     fn compile_builtin_atomic_xchg(
         &self,
@@ -2058,11 +2300,12 @@ impl<'ctx> Codegen<'ctx> {
         op: BinOp,
         l: BasicValueEnum<'ctx>,
         r: BasicValueEnum<'ctx>,
+        unsigned: bool,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         use BinOp::*;
         match op {
-            Add | Sub | Mul | Div | Mod => self.compile_arith(op, l, r),
-            Eq | Ne | Lt | Gt | Le | Ge => self.compile_cmp(op, l, r),
+            Add | Sub | Mul | Div | Mod => self.compile_arith(op, l, r, unsigned),
+            Eq | Ne | Lt | Gt | Le | Ge => self.compile_cmp(op, l, r, unsigned),
             And | Or => self.compile_logic(op, l, r),
             BitAnd | BitOr | BitXor => self.compile_bitwise(op, l, r),
             Shl | Shr => self.compile_shift(op, l, r),
@@ -2116,6 +2359,7 @@ impl<'ctx> Codegen<'ctx> {
         op: BinOp,
         l: BasicValueEnum<'ctx>,
         r: BasicValueEnum<'ctx>,
+        unsigned: bool,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         use BasicValueEnum::*;
         match (l, r) {
@@ -2125,7 +2369,13 @@ impl<'ctx> Codegen<'ctx> {
                     BinOp::Add => b!(self.builder.build_int_add(a, b, "addtmp")),
                     BinOp::Sub => b!(self.builder.build_int_sub(a, b, "subtmp")),
                     BinOp::Mul => b!(self.builder.build_int_mul(a, b, "multmp")),
+                    BinOp::Div if unsigned => {
+                        b!(self.builder.build_int_unsigned_div(a, b, "divtmp"))
+                    }
                     BinOp::Div => b!(self.builder.build_int_signed_div(a, b, "divtmp")),
+                    BinOp::Mod if unsigned => {
+                        b!(self.builder.build_int_unsigned_rem(a, b, "modtmp"))
+                    }
                     BinOp::Mod => b!(self.builder.build_int_signed_rem(a, b, "modtmp")),
                     _ => unreachable!(),
                 };
@@ -2151,6 +2401,7 @@ impl<'ctx> Codegen<'ctx> {
         op: BinOp,
         l: BasicValueEnum<'ctx>,
         r: BasicValueEnum<'ctx>,
+        unsigned: bool,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         use BasicValueEnum::*;
         match (l, r) {
@@ -2159,6 +2410,10 @@ impl<'ctx> Codegen<'ctx> {
                 let pred = match op {
                     BinOp::Eq => IntPredicate::EQ,
                     BinOp::Ne => IntPredicate::NE,
+                    BinOp::Lt if unsigned => IntPredicate::ULT,
+                    BinOp::Gt if unsigned => IntPredicate::UGT,
+                    BinOp::Le if unsigned => IntPredicate::ULE,
+                    BinOp::Ge if unsigned => IntPredicate::UGE,
                     BinOp::Lt => IntPredicate::SLT,
                     BinOp::Gt => IntPredicate::SGT,
                     BinOp::Le => IntPredicate::SLE,

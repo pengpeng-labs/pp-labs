@@ -51,7 +51,7 @@ fn db_match(rec: u64, tid: int) -> int {
         let sv: int = db_stmt_where_val;
         let k: int = 0;
         let eq: int = 1;
-        while (1) {
+        while (true) {
             let a: int = volatile_load8(v + k);
             let b: int = volatile_load8(sv + k);
             if (a != b) {

@@ -1,14 +1,14 @@
 # 开发进度实录（截至 2026-08）
 
 > 本文档如实记录当前实际开发进度、遇到的困难与卡点，供协同开发参考。
-> 任务台账以 docs/roadmap.md 为准（当前 68/100 完成）；本文是"实际状态 + 困难"的补充记录。
+> 任务台账以 docs/roadmap.md 为准（当前 checkbox 93/125；包含被后续阶段覆盖的历史重复项）；本文是"实际状态 + 困难"的补充记录。
 
 ---
 
 ## 1. 总体状态
 
 网络栈重构已收尾：**uIP 1.0 胶水端到端打通**（DNS → TCP → TLS → HTTPS → DeepSeek 工具调用，QEMU slirp 实测）。
-pp-db P15-1 收尾（SQL `SELECT *` + 多轮连接健壮性）与语言三层演进（L1/L2/L3）均已完成。
+pp-db P15-1 收尾（SQL `SELECT *` + 多轮连接健壮性）、语言三层演进（L1/L2/L3）与 pplang v0.2 语义收口均已完成。
 
 | 线 | 状态 | 卡点 |
 |---|---|---|
@@ -23,11 +23,13 @@ pp-db P15-1 收尾（SQL `SELECT *` + 多轮连接健壮性）与语言三层演
 
 ### 2.1 语言线（pp-lang）— 完成
 
-- 编译器：lexer/parser/AST/codegen（LLVM IR，inkwell）5 个 Rust 源文件
+- 编译器：lexer/parser/AST/sema/codegen（LLVM IR，inkwell）6 个 Rust 源文件
 - 命令：`pp ir / run / obj / os / build` 全可用
 - 语言能力：let/while/if/struct/import/extern/数组/指针/协程/volatile/u64
 - **方案B（地址模型 64 位化）已完成**：`ptr_to_int`→U64、调用/返回点 coerce、`volatile_load64/store64`、`&func` 去截断；宿主机静态数据 >4GB 无截断
 - **spec §7 已知编译器问题**：✅ 已全部修复（同名函数重定义报错、variadic extern `...` 语法、数组字面量）
+- **pplang v0.2**：小型 sema + 词法作用域、严格 bool、无符号运算、str/FFI 边界与切片检查、指针接收者、受限 tuple
+- **v0.2 stdlib**：`Buf` 可增长字节缓冲 + `StrMap`（FNV-1a/开放寻址/扩容/owned key-value）；编译器黑盒测试 14 项全绿
 
 ### 2.2 OS 线（pp-os）— 功能齐全，uIP 网络栈打通
 

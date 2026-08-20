@@ -156,6 +156,19 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
+        if self.eat(&TokenKind::LParen) {
+            let mut elements = vec![self.parse_type()?];
+            self.expect(&TokenKind::Comma, "',' in tuple type")?;
+            loop {
+                elements.push(self.parse_type()?);
+                if self.eat(&TokenKind::Comma) {
+                    continue;
+                }
+                self.expect(&TokenKind::RParen, "')' after tuple type")?;
+                break;
+            }
+            return Ok(Type::Tuple(elements));
+        }
         if self.eat(&TokenKind::Star) {
             let inner = self.parse_type()?;
             return Ok(Type::Ptr(Box::new(inner)));
@@ -182,9 +195,7 @@ impl Parser {
             return Ok(Type::Fn(params, Box::new(ret)));
         }
         if self.eat(&TokenKind::LBracket) {
-            // 数组类型，两种语法：
-            //   [N]T   新：长度前置（Go/Zig 式）
-            //   [T; N] 旧：类型前置（Rust 式，暂时兼容，迁移完移除）
+            // 数组类型：[N]T（长度前置，Go/Zig 式）。
             if let TokenKind::Int(v) = self.peek() {
                 let len = *v;
                 self.advance();
@@ -192,15 +203,11 @@ impl Parser {
                 let elem = self.parse_type()?;
                 return Ok(Type::Array(Box::new(elem), len as usize));
             }
-            let elem = self.parse_type()?;
-            self.expect(&TokenKind::Semicolon, "';' in array type")?;
-            let t = self.advance();
-            let len = match t.kind {
-                TokenKind::Int(v) if v >= 0 => v as usize,
-                _ => return Err(format!("expected array length at {}:{}", t.line, t.col)),
-            };
-            self.expect(&TokenKind::RBracket, "']'")?;
-            return Ok(Type::Array(Box::new(elem), len));
+            let t = &self.tokens[self.pos];
+            return Err(format!(
+                "legacy array type syntax is not supported at {}:{}; use [N]T",
+                t.line, t.col
+            ));
         }
         let t = self.advance();
         match t.kind {
@@ -252,6 +259,24 @@ impl Parser {
             }
             TokenKind::Let => {
                 self.advance();
+                if self.eat(&TokenKind::LParen) {
+                    let mut names = Vec::new();
+                    loop {
+                        names.push(self.expect_ident("tuple binding name")?);
+                        if self.eat(&TokenKind::Comma) {
+                            continue;
+                        }
+                        self.expect(&TokenKind::RParen, "')' after tuple binding")?;
+                        break;
+                    }
+                    if names.len() < 2 {
+                        return Err("tuple binding requires at least two names".to_string());
+                    }
+                    self.expect(&TokenKind::Assign, "'=' after tuple binding")?;
+                    let init = self.parse_expr()?;
+                    self.expect(&TokenKind::Semicolon, "';' after tuple binding")?;
+                    return Ok(Stmt::LetTuple { names, init });
+                }
                 let name = self.expect_ident("variable name")?;
                 let ty = if self.eat(&TokenKind::Colon) {
                     Some(self.parse_type()?)
@@ -337,10 +362,13 @@ impl Parser {
                     self.expect(&TokenKind::Semicolon, "';' after assignment")?;
                     return Ok(Stmt::Assign { name, value });
                 }
-                // 下标赋值：ident[...] = expr ;
-                if matches!(self.peek_next(), TokenKind::LBracket) {
+                // 复合左值赋值：下标 / 字段。
+                if matches!(self.peek_next(), TokenKind::LBracket | TokenKind::Dot) {
                     let lhs = self.parse_postfix()?;
-                    self.expect(&TokenKind::Assign, "'=' in index assignment")?;
+                    if !self.eat(&TokenKind::Assign) {
+                        self.expect(&TokenKind::Semicolon, "';' after expression")?;
+                        return Ok(Stmt::Expr(lhs));
+                    }
                     let value = self.parse_expr()?;
                     self.expect(&TokenKind::Semicolon, "';' after assignment")?;
                     return Ok(Stmt::AssignIndex { lhs, value });
@@ -477,9 +505,8 @@ impl Parser {
             if self.eat(&TokenKind::Dot) {
                 let field = self.expect_ident("field name")?;
                 if self.eat(&TokenKind::LParen) {
-                    // 方法糖：p.method(args) ≡ method(p, args)
+                    // 保留接收者信息，语义阶段决定按值传递还是自动取址。
                     let mut args = Vec::new();
-                    args.push(expr);
                     if !self.eat(&TokenKind::RParen) {
                         loop {
                             args.push(self.parse_expr()?);
@@ -490,7 +517,11 @@ impl Parser {
                             break;
                         }
                     }
-                    expr = Expr::Call { callee: field, args };
+                    expr = Expr::MethodCall {
+                        receiver: Box::new(expr),
+                        method: field,
+                        args,
+                    };
                 } else {
                     expr = Expr::Field {
                         base: Box::new(expr),
@@ -614,9 +645,22 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let e = self.parse_expr()?;
-                self.expect(&TokenKind::RParen, "')'")?;
-                Ok(e)
+                let first = self.parse_expr()?;
+                if self.eat(&TokenKind::Comma) {
+                    let mut values = vec![first];
+                    loop {
+                        values.push(self.parse_expr()?);
+                        if self.eat(&TokenKind::Comma) {
+                            continue;
+                        }
+                        self.expect(&TokenKind::RParen, "')' after tuple")?;
+                        break;
+                    }
+                    Ok(Expr::Tuple(values))
+                } else {
+                    self.expect(&TokenKind::RParen, "')'")?;
+                    Ok(first)
+                }
             }
             TokenKind::LBracket => {
                 // 数组字面量：[elem, elem, ...]

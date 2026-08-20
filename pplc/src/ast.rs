@@ -13,6 +13,7 @@ pub enum Type {
     Array(Box<Type>, usize),
     Ptr(Box<Type>),
     Fn(Vec<Type>, Box<Type>),
+    Tuple(Vec<Type>),
     Void,
     Named(String),
 }
@@ -66,6 +67,11 @@ pub enum Expr {
         callee: String,
         args: Vec<Expr>,
     },
+    MethodCall {
+        receiver: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
     StructInit {
         name: String,
         fields: Vec<(String, Expr)>,
@@ -84,6 +90,7 @@ pub enum Expr {
         hi: Option<Box<Expr>>,
     },
     ArrayLit(Vec<Expr>),
+    Tuple(Vec<Expr>),
     Cast {
         expr: Box<Expr>,
         ty: Type,
@@ -100,6 +107,10 @@ pub enum Stmt {
         name: String,
         ty: Option<Type>,
         init: Option<Expr>,
+    },
+    LetTuple {
+        names: Vec<String>,
+        init: Expr,
     },
     Assign {
         name: String,

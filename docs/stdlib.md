@@ -1,6 +1,6 @@
 # pp-lang 标准库（stdlib）
 
-> 状态：**草案 / 待定稿**。最小、自包含、部分自举（大部分用 `.pp` 写，仅少数 `extern` 到 libc 或裸机 VGA）。
+> 状态：**v0.2 草案**。最小、自包含、部分自举（大部分用 `.pp` 写，仅少数 `extern` 到 libc 或裸机服务）。
 
 ## 原则
 
@@ -24,18 +24,22 @@
 | `substr(s, i, n)` | 子串 |
 | `concat(a, b)` | 拼接 |
 
+当前 `string.pp` 已按切片长度实现 `strlen/strcmp`；`cstr_len(*u8)` 仅用于 FFI 边界。
+
+## 内存与容器
+
+| 文件 | API | 所有权 |
+|------|-----|--------|
+| `alloc.pp` | `alloc(n) -> *u8` / `dealloc(*u8)` | 调用方显式释放 |
+| `buf.pp` | `buf_new/reserve/push/append/view/clear/free` | Buf 拥有 data；`buf_view` 仅借用视图 |
+| `strmap.pp` | `map_new/set/get/has/del/free` | Map 拥有 key/value 副本；`map_get` 返回借用视图 |
+
 ## 数学（math.pp）
 
 | 函数 | 说明 |
 |------|------|
 | `abs(x)` / `max(a,b)` / `min(a,b)` | 基本 |
 | `floor(x)` / `ceil(x)` | 取整 |
-
-## 集合（collection.pp，可选后置）
-
-| 函数 | 说明 |
-|------|------|
-| `push(xs, x)` / `pop(xs)` / `get(xs, i)` | 数组 |
 
 ## 系统 / OS（sys.pp，Phase 5+）
 

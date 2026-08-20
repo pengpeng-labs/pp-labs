@@ -64,7 +64,7 @@ fn cli_starts(buf: u64, s: str) -> int {
 /* 字符串相等比较（buf 与字面量；s 结束即判定） */
 fn str_eq(buf: u64, s: str) -> int {
     let i: int = 0;
-    while (1) {
+    while (true) {
         let a: int = volatile_load8(buf + i);
         let b: int = s[i];
         if (b == 0) {
@@ -84,7 +84,7 @@ fn str_eq(buf: u64, s: str) -> int {
 fn cli_arg(buf: u64, k: int, out: u64) -> int {
     let pos: int = 0;
     let cur: int = 0;
-    while (1) {
+    while (true) {
         while (volatile_load8(buf + pos) == 32 || volatile_load8(buf + pos) == 9
                || volatile_load8(buf + pos) == 10 || volatile_load8(buf + pos) == 13) {
             pos = pos + 1;
@@ -159,7 +159,7 @@ fn kw_find(buf: u64, kw: str) -> int {
    SQLite 词法器语义：避免 "int" 误匹配 "intx" */
 fn ci_eq(buf: u64, s: str) -> int {
     let i: int = 0;
-    while (1) {
+    while (true) {
         let a: int = volatile_load8(buf + i);
         if (a >= 97 && a <= 122) {
             a = a - 32;
@@ -573,7 +573,7 @@ static cli_line: [512]u8;   /* 输入行缓冲：static 而非栈，避免跨函
 
 fn main() -> int {
     serial_print("pp-db CLI (independent database)\n");
-    while (1) {
+    while (true) {
         let l: int = cli_readline(ptr_to_int(&cli_line[0]), 512);
         if (l < 0) {
             break;   /* EOF */

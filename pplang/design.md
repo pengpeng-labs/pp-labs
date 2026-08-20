@@ -23,11 +23,11 @@
 
 **已有**：
 - 18 关键字：`fn extern if else return let while for in as defer break continue struct import static true false`
-- 类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=char\* null结尾) `u8/u16/u32/u64`、`struct`(值语义)、`[N]T`(长度前置)、`fn(...) -> ret`(函数指针)、`*T`
+- 类型：`int`(i32) `float`(f64) `bool`(i1) `str`(=`{ptr,len}`)、`u8/u16/u32/u64`、`struct`(值语义)、`[N]T`(长度前置)、`fn(...) -> ret`(函数指针)、`*T`、受限 tuple
 - 语句/表达式：`let`(推断+零初始化)、赋值(含 `*p=v`/`buf[i]=v`)、`return`、`if/else`、`while`、`for x in s` + `range(n)`、`defer`(退出点 LIFO)、`break/continue`、二元/一元运算、`x in s` 成员判断、显式 cast `x as T`、`struct` 构造+字段、方法糖 `p.m(x)`、下标、数组字面量 `[e,e,...]`、指针 `&x *p p[i] p+i`、指针判空 `p == 0`、函数指针调用 `fp()`
 - 顶层：`fn`、`extern`(含 variadic `...`)、`struct`、`import`、`static`
 - 系统层内置：`print/println`、`volatile_load/store8/16/32/64`、`outb/inb/outl/inl`、`cli/sti/hlt`、`rdtsc`、`atomic_xchg`、`int_to_ptr/ptr_to_int`、`&func`(取址)
-- stdlib：`alloc.pp`(显式 alloc/free，宿主=malloc/free)、`math.pp`、`string.pp`
+- stdlib：`alloc.pp`(显式裸指针 alloc/dealloc)、`math.pp`、`string.pp`、`buf.pp`、`strmap.pp`
 
 **spec 纸上写了但未实现**：`unsafe` `asm`
 
@@ -78,10 +78,10 @@
 
 | 项 | 方案 | 成本 | 状态 |
 |----|------|------|------|
-| **多返回值** `(T1,T2)` | `fn f() -> (bool,int)` 脱糖成匿名 struct，编译期打包/拆包（Go 同款 ABI） | 纯编译器（ast `Type::Tuple` + `fn_type`/`Return`/`Call`/`Let` 四处） | ⚠️ 候选，**进 roadmap 首选** |
+| **多返回值** `(T1,T2)` | `fn f() -> (bool,int)` 使用 LLVM literal struct，支持 tuple 值与 `let (a,b)` 解构 | 编译器 + sema | ✅ v0.2 完成 |
 | **Sum Type** `enum` + 精简 `switch` | tag + payload + 穷尽性检查，见 §4.1 | 两个关键字 + tag 编号/穷尽性检查/跳转表，接近 record | ⚠️ 候选，**优先级高于泛型** |
-| **关联容器** `StrMap` | 标准库开放寻址哈希，键值都 `str`，见 §6.4 | 纯 `.pp`，零编译器改动 | ⚠️ 候选 |
-| **接口统一** | 先"软统一"（API 命名 `has/get/len` 对齐 str 切片）；"硬统一"（`m[k]`/`k in m`/`len(m)` 直接作用）需元方法/编译期分发 | 软=零 / 硬=高 | 软随 StrMap 做，硬远期 |
+| **关联容器** `StrMap` | 标准库 FNV-1a + 开放寻址，键值都 `str`，见 §6.4 | 纯 `.pp` | ✅ v0.2 完成 |
+| **接口统一** | 先"软统一"（`map_get/has/set/del/free`）；硬统一需元方法/编译期分发 | 软=零 / 硬=高 | ✅ 软统一；硬统一远期 |
 
 - **依赖**：多返回值是 StrMap 的前置——`map_get` 无多返回值只能"空串当哨兵"，无法区分"值是空串"与"没找到"；`-> (bool, str)` 才无歧义。
 
@@ -184,8 +184,8 @@ Zig 有 6 种指针（`*T`、`*const T`、`[*]T`、`[]T`、`?*T`、`[:0]T`），
 | 定长数组 `[N]T` | 栈上、编译期长度 | ⚠️ 由 `[T; N]` 迁移而来（见 §6.2） |
 | 结构体 `struct` | 异类数据组合（值语义） | ✅ 已有，保持 |
 | 切片 `str` | 动态序列视图（`{ptr, len}`） | ✅ 已落地（`len()` O(1)、`s[a:b]` 切片、字面量带长） |
-| 动态数组 | 可增长序列 | ✅ **要，但用标准库实现**（简单版 ArrayList，非语言内建） |
-| 关联容器 `StrMap` | 键值映射（哈希表） | ⚠️ 候选，标准库实现（见 §6.4），键值都 `str` |
+| 动态数组 `Buf` | 可增长字节序列 | ✅ v0.2 标准库实现 |
+| 关联容器 `StrMap` | 键值映射（哈希表） | ✅ v0.2 标准库实现，键值都 `str` |
 
 ### 6.1 为什么切片是核心、且要"无借用"
 

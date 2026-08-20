@@ -9,6 +9,7 @@ mod ast;
 mod codegen;
 mod lexer;
 mod parser;
+mod sema;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -155,6 +156,7 @@ fn load_program(path: &str) -> Result<Vec<ast::Item>, String> {
     let mut out = Vec::new();
     let mut visited = Vec::new();
     resolve_imports(items, &base, &mut out, &mut visited)?;
+    sema::check_program(&out)?;
     Ok(out)
 }
 

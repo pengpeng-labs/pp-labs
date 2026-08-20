@@ -201,7 +201,7 @@ fn db_parse_sql(sql: int) -> int {
         if (ps < 0) {
             return -1;
         }
-        while (1) {
+        while (true) {
             let cname: int = 0x406400 + db_stmt_coln * 40;
             let pc: int = db_read_ident(sql, ps, cname);
             if (pc < 0) {
@@ -275,7 +275,7 @@ fn db_parse_sql(sql: int) -> int {
         if (ps < 0) {
             return -1;
         }
-        while (1) {
+        while (true) {
             let cname: int = 0x406400 + db_stmt_coln * 40;
             let pc: int = db_read_ident(sql, ps, cname);
             if (pc < 0) {
@@ -303,7 +303,7 @@ fn db_parse_sql(sql: int) -> int {
         if (ps2 < 0) {
             return -1;
         }
-        while (1) {
+        while (true) {
             let n: int = 0;
             let pn: int = db_read_num(sql, ps2, 0x406100);
             if (pn >= 0) {
@@ -341,7 +341,7 @@ fn db_parse_sql(sql: int) -> int {
             db_stmt_star = 1;
             ps = pstar;
         } else {
-            while (1) {
+            while (true) {
                 let cname: int = 0x406400 + db_stmt_coln * 40;
                 let pc: int = db_read_ident(sql, ps, cname);
                 if (pc < 0) {

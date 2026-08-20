@@ -60,7 +60,7 @@ fn serial_print(s: str) {
 fn str_eq(pa: int, s: str) -> int {
     let pb: int = ptr_to_int(s);
     let i: int = 0;
-    while (1) {
+    while (true) {
         let ca: int = volatile_load8(pa + i);
         let cb: int = volatile_load8(pb + i);
         if (ca != cb) {
@@ -78,7 +78,7 @@ fn str_eq(pa: int, s: str) -> int {
 fn str_starts(pa: int, s: str) -> int {
     let pb: int = ptr_to_int(s);
     let i: int = 0;
-    while (1) {
+    while (true) {
         let cb: int = volatile_load8(pb + i);
         if (cb == 0) {
             return 1;
@@ -236,7 +236,7 @@ fn parse_arg(start: int, buf: int) -> int {
     while (volatile_load8(0x400200 + start) == 32) {
         start = start + 1;
     }
-    while (1) {
+    while (true) {
         let c: int = volatile_load8(0x400200 + start);
         if (c == 32 || c == 0) {
             volatile_store8(buf, 0);
@@ -270,10 +270,10 @@ fn cmd_sql() {
 
 /* db <子命令>：KV/Doc/表目录（create/drop/list）/ ask（NL→操作） */
 fn cmd_db() {
-    if (str_starts(0x400200, "db ask ")) {
+    if (str_starts(0x400200, "db ask ") == 1) {
         /* db ask <问题>：LLM 看 schema → sql/kv/doc 工具操作 → 结果回传 + 会话落库 */
         db_ask(0x400200 + 7, line_len - 7);
-    } else if (str_starts(0x400200, "db put ")) {
+    } else if (str_starts(0x400200, "db put ") == 1) {
         parse_arg(7, 0x400300);   /* key */
         let hp: int = 7;
         while (volatile_load8(0x400200 + hp) != 0 && volatile_load8(0x400200 + hp) != 32) {
@@ -287,7 +287,7 @@ fn cmd_db() {
         } else {
             serial_print("kv full\n");
         }
-    } else if (str_starts(0x400200, "db get ")) {
+    } else if (str_starts(0x400200, "db get ") == 1) {
         parse_arg(7, 0x400300);
         let gl: int = kv_get(0x400300, 0x400C00);
         if (gl >= 0) {
@@ -301,14 +301,14 @@ fn cmd_db() {
         } else {
             serial_print("kv: not found\n");
         }
-    } else if (str_starts(0x400200, "db del ")) {
+    } else if (str_starts(0x400200, "db del ") == 1) {
         parse_arg(7, 0x400300);
         if (kv_del(0x400300) == 1) {
             serial_print("kv del ok\n");
         } else {
             serial_print("kv: not found\n");
         }
-    } else if (str_starts(0x400200, "db doc put ")) {
+    } else if (str_starts(0x400200, "db doc put ") == 1) {
         parse_arg(11, 0x400300);   /* name */
         let hp: int = 11;
         while (volatile_load8(0x400200 + hp) != 0 && volatile_load8(0x400200 + hp) != 32) {
@@ -322,7 +322,7 @@ fn cmd_db() {
         } else {
             serial_print("doc full\n");
         }
-    } else if (str_starts(0x400200, "db doc get ")) {
+    } else if (str_starts(0x400200, "db doc get ") == 1) {
         parse_arg(11, 0x400300);
         let gl: int = doc_get(0x400300, 0x400C00);
         if (gl >= 0) {
@@ -336,15 +336,15 @@ fn cmd_db() {
         } else {
             serial_print("doc: not found\n");
         }
-    } else if (str_starts(0x400200, "db save ")) {
+    } else if (str_starts(0x400200, "db save ") == 1) {
         parse_arg(8, 0x400300);
         db_save(0x400300);
-    } else if (str_starts(0x400200, "db load ")) {
+    } else if (str_starts(0x400200, "db load ") == 1) {
         parse_arg(8, 0x400300);
         db_load(0x400300);
-    } else if (str_eq(0x400200, "db list")) {
+    } else if (str_eq(0x400200, "db list") == 1) {
         db_list();
-    } else if (str_starts(0x400200, "db drop ")) {
+    } else if (str_starts(0x400200, "db drop ") == 1) {
         parse_arg(8, 0x400300);
         let tid: int = db_find_table(int_to_ptr(0x400300));
         if (tid >= 0) {
@@ -353,7 +353,7 @@ fn cmd_db() {
         } else {
             serial_print("sql: no such table\n");
         }
-    } else if (str_starts(0x400200, "db create ")) {
+    } else if (str_starts(0x400200, "db create ") == 1) {
         /* db create <name> <int|str> ...（≤4 列，简化版 CREATE） */
         let pos: int = parse_arg(10, 0x400300);   /* name → 0x400300 */
         let ct: [4]int;
@@ -389,11 +389,11 @@ fn process_line() {
     if (line_len == 0) {
         return;
     }
-    if (str_eq(0x400200, "help")) {
+    if (str_eq(0x400200, "help") == 1) {
         serial_print("commands: help, ls, cat, write, rm, app list/run, db, sql, mcp, wasm, dns, https, run\n");
-    } else if (str_eq(0x400200, "ls")) {
+    } else if (str_eq(0x400200, "ls") == 1) {
         fs_list();
-    } else if (str_starts(0x400200, "cat ")) {
+    } else if (str_starts(0x400200, "cat ") == 1) {
         parse_arg(4, 0x400300);
         let idx: int = fs_find(int_to_ptr(0x400300));
         if (idx >= 0) {
@@ -401,14 +401,14 @@ fn process_line() {
         } else {
             serial_print("no such file\n");
         }
-    } else if (str_starts(0x400200, "rm ")) {
+    } else if (str_starts(0x400200, "rm ") == 1) {
         parse_arg(3, 0x400300);
         if (fs_remove(int_to_ptr(0x400300)) == 0) {
             serial_print("removed\n");
         } else {
             serial_print("no such file\n");
         }
-    } else if (str_starts(0x400200, "write ")) {
+    } else if (str_starts(0x400200, "write ") == 1) {
         let n: int = parse_arg(6, 0x400300);
         let idx: int = fs_find(int_to_ptr(0x400300));
         if (idx < 0) {
@@ -421,7 +421,7 @@ fn process_line() {
         } else {
             serial_print("fs full\n");
         }
-    } else if (str_eq(0x400200, "arp")) {
+    } else if (str_eq(0x400200, "arp") == 1) {
         let target: [4]u8;
         target[0] = 10;
         target[1] = 0;
@@ -438,7 +438,7 @@ fn process_line() {
             }
             hlt();
         }
-    } else if (str_starts(0x400200, "dns ")) {
+    } else if (str_starts(0x400200, "dns ") == 1) {
         /* 先 ARP 解析网关 10.0.2.2 */
         let gw: [4]u8;
         gw[0] = 10;
@@ -466,7 +466,7 @@ fn process_line() {
             }
             hlt();
         }
-    } else if (str_starts(0x400200, "https ")) {
+    } else if (str_starts(0x400200, "https ") == 1) {
         /* 先 ARP 解析网关 */
         let gw: [4]u8;
         gw[0] = 10;
@@ -496,21 +496,21 @@ fn process_line() {
         }
         /* HTTPS GET / */
         https_get(ptr_to_int(&dns_resolved[0]), 443, int_to_ptr(0x400200 + 6), "/");
-    } else if (str_starts(0x400200, "ds ")) {
+    } else if (str_starts(0x400200, "ds ") == 1) {
         /* app: DeepSeek 对话 agent */
         ds_main();
-    } else if (str_starts(0x400200, "browse ")) {
+    } else if (str_starts(0x400200, "browse ") == 1) {
         /* app: CLI 文本浏览器 */
         browse_main();
-    } else if (str_eq(0x400200, "app list")) {
+    } else if (str_eq(0x400200, "app list") == 1) {
         app_cmd_list();
-    } else if (str_starts(0x400200, "app run ")) {
+    } else if (str_starts(0x400200, "app run ") == 1) {
         parse_arg(8, 0x400300);
         app_cmd_run(0x400300);
-    } else if (str_starts(0x400200, "app help ")) {
+    } else if (str_starts(0x400200, "app help ") == 1) {
         parse_arg(9, 0x400300);
         app_cmd_help(0x400300);
-    } else if (str_starts(0x400200, "mcp ")) {
+    } else if (str_starts(0x400200, "mcp ") == 1) {
         /* MCP：JSON-RPC 请求直接测试（mcp <json> 或 mcp list/call ls 快捷方式） */
         if (str_eq(0x400200, "mcp list") == 1) {
             let reqs: str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}";
@@ -527,7 +527,7 @@ fn process_line() {
                 serial_putc(volatile_load8(0x400A00 + j));
                 j = j + 1;
             }
-        } else if (str_starts(0x400200, "mcp call ")) {
+        } else if (str_starts(0x400200, "mcp call ") == 1) {
             parse_arg(9, 0x400300);
             let tres: int = mcp_call(0x400300, 0, 0x400A00);
             serial_print("MCP call result: ");
@@ -537,7 +537,7 @@ fn process_line() {
                 j = j + 1;
             }
             serial_putc(10);
-        } else if (str_starts(0x400200, "mcp ")) {
+        } else if (str_starts(0x400200, "mcp ") == 1) {
             /* 原始 JSON-RPC 请求（从 "mcp " 之后） */
             let rl: int = mcp_handle(0x400200 + 4, 0x400A00);
             serial_print("MCP: ");
@@ -547,11 +547,11 @@ fn process_line() {
                 j = j + 1;
             }
         }
-    } else if (str_starts(0x400200, "db ")) {
+    } else if (str_starts(0x400200, "db ") == 1) {
         cmd_db();
-    } else if (str_starts(0x400200, "sql ")) {
+    } else if (str_starts(0x400200, "sql ") == 1) {
         cmd_sql();
-    } else if (str_starts(0x400200, "wasm install ")) {
+    } else if (str_starts(0x400200, "wasm install ") == 1) {
         /* 安装 WASM：wasm install <file> <hex>——hex 转二进制写入 FS */
         let hp0: int = parse_arg(13, 0x400300);   /* 返回分隔符位置 */
         let fname: int = 0x400300;
@@ -589,7 +589,7 @@ fn process_line() {
         } else {
             serial_print("fs full\n");
         }
-    } else if (str_starts(0x400200, "wasm run ")) {
+    } else if (str_starts(0x400200, "wasm run ") == 1) {
         /* 运行 WASM 文件：wasm run <file> */
         parse_arg(9, 0x400300);
         let widx: int = fs_find(int_to_ptr(0x400300));
@@ -608,7 +608,7 @@ fn process_line() {
         } else {
             serial_print("wasm: no such file\n");
         }
-    } else if (str_eq(0x400200, "wasm test")) {
+    } else if (str_eq(0x400200, "wasm test") == 1) {
         /* 内存构造 hello.wasm（import fd_write + 输出 "hi\n"）并运行 */
         let w: int = 0x401400;
                         let wb: [110]u8;
@@ -649,7 +649,7 @@ fn process_line() {
         } else {
             serial_print("wasm: bad module\n");
         }
-    } else if (str_starts(0x400200, "wasm ")) {
+    } else if (str_starts(0x400200, "wasm ") == 1) {
         /* WASM：解析并运行 FS 中的 .wasm 模块（暂只有解析） */
         parse_arg(5, 0x400300);
         let widx: int = fs_find(int_to_ptr(0x400300));
@@ -664,7 +664,7 @@ fn process_line() {
         } else {
             serial_print("wasm: no such file\n");
         }
-    } else if (str_starts(0x400200, "run ")) {
+    } else if (str_starts(0x400200, "run ") == 1) {
         /* shell 脚本：从 FS 读取，逐行执行（忽略 # 注释与空行） */
         parse_arg(4, 0x400300);
         let ridx: int = fs_find(int_to_ptr(0x400300));
@@ -701,9 +701,9 @@ fn process_line() {
         } else {
             serial_print("no such script\n");
         }
-    } else if (str_starts(0x400200, "app")) {
+    } else if (str_starts(0x400200, "app") == 1) {
         serial_print("apps: app list | app run <name> | app help <name>\n");
-    } else if (str_starts(0x400200, "http")) {
+    } else if (str_starts(0x400200, "http") == 1) {
         /* 先 ARP 解析网关 10.0.2.2 */
         let gw: [4]u8;
         gw[0] = 10;
@@ -722,11 +722,11 @@ fn process_line() {
         }
         /* 发 HTTP GET（路径在 "http " 之后，连到 10.0.2.2:8000） */
         http_get(ptr_to_int(&gw[0]), 8000, int_to_ptr(0x400200 + 5));
-    } else if (str_eq(0x400200, "about")) {
+    } else if (str_eq(0x400200, "about") == 1) {
         serial_print("pp-os: a unikernel written in pp-lang\n");
-    } else if (str_eq(0x400200, "clear")) {
+    } else if (str_eq(0x400200, "clear") == 1) {
         clear_screen();
-    } else if (str_starts(0x400200, "echo")) {
+    } else if (str_starts(0x400200, "echo") == 1) {
         let i: int = 5;
         while (i < line_len) {
             serial_putc(volatile_load8(0x400200 + i));
@@ -755,7 +755,7 @@ fn yield_() {
 
 /* 心跳协程：周期性打印 'H'，演示与 shell 并发 */
 fn heartbeat() {
-    while (1) {
+    while (true) {
         hb_count = hb_count + 1;
         if (hb_count >= 20) {
             serial_putc(72);   /* 'H' */
@@ -792,7 +792,7 @@ fn browse_main() {
 /* 简单 shell：轮询键盘缓冲，行编辑 + 命令执行 */
 fn shell() {
     serial_print("pp-os> ");
-    while (1) {
+    while (true) {
         hlt();
         if (kb_r != kb_w) {
             let c: int = volatile_load8(0x400000 + kb_r);
