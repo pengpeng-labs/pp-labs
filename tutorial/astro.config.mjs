@@ -52,7 +52,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'pp-labs 教程',
-      description: '从 pp-lang v0.3 到编译器、数据库与操作系统',
+      description: '从 pplang v0.3 到编译器、数据库与操作系统',
       defaultLocale: 'root',
       locales: {
         root: { label: '简体中文', lang: 'zh-CN' },
@@ -65,35 +65,64 @@ export default defineConfig({
       lastUpdated: true,
       customCss: ['./src/styles/custom.css'],
       sidebar: [
-        { label: '导览', items: [{ label: '四套教程', link: '/' }] },
+        { label: '课程门户', items: [{ label: '四套独立教程', link: '/' }] },
         {
           label: 'pplang v0.3',
           items: [
             { label: '语言总览', link: '/pplang/v0-3/' },
             {
-              label: '来源与设计',
+              label: '理论与设计',
               items: [{ autogenerate: { directory: 'pplang/v0-3/design' } }],
             },
             {
-              label: '使用教程',
+              label: 'pplang Book',
               items: [{ autogenerate: { directory: 'pplang/v0-3/guide' } }],
             },
             {
-              label: '参考手册',
+              label: 'Language Reference',
               items: [{ autogenerate: { directory: 'pplang/v0-3/reference' } }],
             },
           ],
         },
         {
-          label: 'ppdb 数据库',
-          items: [{ autogenerate: { directory: 'ppdb' } }],
+          label: 'pplc 编译器',
+          items: [
+            { label: '课程导览', link: '/pplc/' },
+            {
+              label: '设计与路线',
+              items: [{ autogenerate: { directory: 'pplc/design' } }],
+            },
+            {
+              label: 'pplc Book',
+              items: [{ autogenerate: { directory: 'pplc/book' } }],
+            },
+            {
+              label: '实现参考',
+              items: [{ autogenerate: { directory: 'pplc/reference' } }],
+            },
+          ],
         },
         {
-          label: '后续教程',
+          label: 'ppdb 数据库',
           items: [
-            { label: 'pplc 编译器', link: '/pplc/' },
-            { label: 'ppos 操作系统', link: '/ppos/' },
+            { label: '课程导览', link: '/ppdb/' },
+            {
+              label: '设计与定位',
+              items: [{ autogenerate: { directory: 'ppdb/design' } }],
+            },
+            {
+              label: 'ppdb Book',
+              items: [{ autogenerate: { directory: 'ppdb/book' } }],
+            },
+            {
+              label: '实现参考',
+              items: [{ autogenerate: { directory: 'ppdb/reference' } }],
+            },
           ],
+        },
+        {
+          label: 'ppos 操作系统',
+          items: [{ label: '项目状态', link: '/ppos/' }],
         },
       ],
     }),

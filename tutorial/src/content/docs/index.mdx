@@ -4,33 +4,26 @@ description: 一门语言、一个编译器、一个数据库和一个操作系�
 template: splash
 hero:
   title: pp-labs
-  tagline: 从一门能装进脑子的系统语言，走到编译器、数据库与操作系统。
+  tagline: 把语言、编译器、数据库与操作系统原理，落成四个真正运行的项目。
   actions:
-    - text: 开始学习 pplang v0.3
+    - text: 学习 pplang v0.3
       link: /xlc-lang/pplang/v0-3/
       icon: right-arrow
       variant: primary
-    - text: 查看语言规范
-      link: /xlc-lang/pplang/v0-3/reference/specification/
-      icon: document
+    - text: 进入 ppdb 教程
+      link: /xlc-lang/ppdb/
+      icon: database
       variant: secondary
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseCard from '../../components/CourseCard.astro';
 
 <CardGrid>
-  <Card title="pplang" icon="seti:config">
-    学习 pp-lang v0.3 的来源、设计、完整语言能力和精确语义。当前教程主线。
-  </Card>
-  <Card title="pplc" icon="seti:rust">
-    从 token、AST 和语义分析，走到泛型单态化与 LLVM IR。规划中。
-  </Card>
-  <Card title="ppdb" icon="database">
-    用 pp 实现 SQL、KV、Doc、持久化与 Agent 数据层。规划中。
-  </Card>
-  <Card title="ppos" icon="setting">
-    从启动、中断和内存走到网络、TLS、WASM 与 unikernel app。规划中。
-  </Card>
+  <CourseCard title="pplang" icon="seti:config" tone="orange" status="v0.3 已定版" href="/xlc-lang/pplang/v0-3/" description="学习 pplang（简称 pp）的语言模型、精确语义与系统边界，并理解类型理论怎样进入真实程序。" />
+  <CourseCard title="pplc" icon="seti:rust" tone="violet" status="教程编写中" href="/xlc-lang/pplc/" description="沿真实 Rust 编译器，从 token、AST 和语义分析，走到单态化、LLVM IR 与目标文件。" />
+  <CourseCard title="ppdb" icon="database" tone="green" status="核心已完成" href="/xlc-lang/ppdb/" description="把关系模型、页存储、索引和事务落成一个 SQL/KV/Doc 数据库，再接入 Agent 与 MCP。" />
+  <CourseCard title="ppos" icon="setting" tone="red" status="项目开发中" href="/xlc-lang/ppos/" description="把组成原理、OSTEP 与计算机网络知识落到启动、中断、内存、uIP、TLS 和 unikernel app。" />
 </CardGrid>
 
-四套教程共享代码仓库和术语，但不重复职责。pplang 定义语言；pplc 解释实现；ppdb 与 ppos 展示它在真实系统中的使用。
+四套教程来自同一条学习路径，但各自能够独立阅读：pplang 解释语言，pplc 解释编译器，ppdb 解释数据库，ppos 解释操作系统。教材提供理论坐标，仓库里的代码负责回答这些知识怎样进入工程。

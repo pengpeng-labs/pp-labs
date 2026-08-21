@@ -1,0 +1,117 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import type { StarlightIcon } from '@astrojs/starlight/types';
+
+interface Props {
+  title: string;
+  description: string;
+  href: string;
+  icon: StarlightIcon;
+  status: string;
+  tone: 'orange' | 'violet' | 'green' | 'red';
+}
+
+const { title, description, href, icon, status, tone } = Astro.props;
+---
+
+<a class={`course-card course-card--${tone}`} href={href}>
+  <div class="course-card__heading">
+    <span class="course-card__icon"><Icon name={icon} size="1.35rem" /></span>
+    <h2>{title}</h2>
+    <span class="course-card__status">{status}</span>
+  </div>
+  <p>{description}</p>
+  <span class="course-card__action">进入教程 <Icon name="right-arrow" size="1rem" /></span>
+</a>
+
+<style>
+  .course-card {
+    --course-accent: #1769aa;
+    --course-soft: #e9f3fb;
+    display: flex;
+    min-height: 13rem;
+    flex-direction: column;
+    gap: 1rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-top: 3px solid var(--course-accent);
+    border-radius: 6px;
+    padding: clamp(1.25rem, 3vw, 2rem);
+    color: var(--sl-color-text);
+    text-decoration: none;
+    transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  }
+
+  .course-card:hover {
+    border-color: var(--course-accent);
+    box-shadow: 0 10px 24px rgb(0 0 0 / 9%);
+    transform: translateY(-2px);
+  }
+
+  .course-card:focus-visible {
+    outline: 3px solid var(--course-accent);
+    outline-offset: 3px;
+  }
+
+  .course-card--orange { --course-accent: #b45f06; --course-soft: #fff1dc; }
+  .course-card--violet { --course-accent: #7c3aed; --course-soft: #f1eafe; }
+  .course-card--green { --course-accent: #15803d; --course-soft: #e7f6ec; }
+  .course-card--red { --course-accent: #be123c; --course-soft: #fde8ee; }
+
+  .course-card__heading {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .course-card__heading h2 {
+    margin: 0;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-h3);
+    letter-spacing: 0;
+  }
+
+  .course-card__icon {
+    display: grid;
+    width: 2.4rem;
+    height: 2.4rem;
+    place-items: center;
+    border: 1px solid var(--course-accent);
+    border-radius: 6px;
+    background: var(--course-soft);
+    color: var(--course-accent);
+  }
+
+  .course-card__status {
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-xs);
+    white-space: nowrap;
+  }
+
+  .course-card p {
+    margin: 0;
+    line-height: 1.7;
+  }
+
+  .course-card__action {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: auto;
+    color: var(--course-accent);
+    font-weight: 600;
+  }
+
+  :global([data-theme='dark']) .course-card {
+    --course-soft: color-mix(in srgb, var(--course-accent) 20%, #111 80%);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .course-card { transition: none; }
+  }
+
+  @media (max-width: 34rem) {
+    .course-card__heading { grid-template-columns: auto 1fr; }
+    .course-card__status { grid-column: 2; }
+  }
+</style>
