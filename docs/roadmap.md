@@ -79,7 +79,7 @@
 - [x] **P8-2** 数组（`let buf: [int; 256]`）+ 下标 `buf[i]`（含 `buf[i] = v`）
 - [x] **P8-3** 字符串 stdlib（`stdlib/string.pp`：strlen/strcmp/strcpy/strcat）
 - [x] **P8-4** 极简指针：`*T` 类型 + `&` / `*` / `[]` / `+`（含 `*p = v` 解引用赋值）
-- [ ] **P8-5** `free()` / free-list（或 slab）allocator → 并入 v4 文件系统
+- [x] **P8-5** `free()` / free-list allocator（A0 已落地：first-fit + 切分 + `kfree`；合并/边界审计进入 PPOS-R1）
 - [ ] **P8-6** （可选）struct 方法（驱动/协议封装）
 
 ## Phase 9 — pp-os v4：文件系统 + shell 强化
@@ -106,19 +106,19 @@
 - [x] **P12-2a** 内嵌 agent 协程（多轮对话）：历史消息存内存缓冲（0x675000），`ds` 请求携带完整对话历史（含转义）；修复第二轮连接失败（源端口轮换 + SYN 残留过滤 + 分块状态重置）
 - [x] **P12-2b** agent 工具调用——`agent.pp`：请求带 tools 定义（ls）→ 解析 tool_calls（json_find_after 避开顶层 id）→ 内核执行（fs_list_str）→ tool 消息回传（≤3 轮）；真实验证 `ds list my files` → LLM 调用 ls → 基于真实 FS 列表回答。附带修复：Makefile 依赖补全、PIT 编程 100Hz、握手残留记录过滤（应用阶段丢弃 22/20 类型）、pump hlt 让出
 - [x] **P12-1** MCP（JSON-RPC 2.0 + 工具协议层）——mcp.pp：tools/list、tools/call、initialize；agent 工具调用走 MCP；mcp list / mcp call ls 验证通过
-- [ ] **P12-3** CLI 浏览器（HTTP + 文本渲染）
-- [ ] **P12-4** WASM 运行时（移植/写最小核心解释器，供"装程序"）
+- [x] **P12-3** CLI 浏览器（B1~B3 已落地：HTTP + HTML 文本渲染）
+- [x] **P12-4** 最小 WASM demo runtime（W1~W4 已落地；当前只运行 trusted bytecode，安全 runtime 进入 PPOS-R5）
 
 ## Phase 13 — 四套教程
 
-> 同一个 Starlight 站点承载四套教程。当前里程碑只交付 pplang v0.3；pplc、ppdb、ppos 保留入口与后续任务。
+> 同一个 Starlight 站点承载四套独立教程，首页是课程门户；pplang、pplc、ppdb、ppos 各有独立入口与侧栏课程组。
 
-- [x] **P13-0** Starlight 文档地基：中文主语言、英文回退、四教程导航、全文搜索、GitHub Pages 构建
-- [x] **P13-1** pplang v0.3 来源与设计篇：真实需求、语言借鉴、设计取舍、版本演进
-- [x] **P13-2** pplang v0.3 使用教程：从第一个程序到 Sum Type、显式泛型与系统边界
+- [x] **P13-0** Starlight 文档地基：中文主语言、英文回退、四教程整卡入口/平级课程组、全文搜索、GitHub Pages 构建
+- [x] **P13-1** pplang v0.3 理论与设计篇：TAPL/PLAI 语言模型 + 八本教材阅读地图 + 语言借鉴、取舍与简史
+- [x] **P13-2** pplang Book：语言模型 → 值/控制流/函数 → 积类型/切片/和类型 → 泛型/容器/FFI → 协议解析综合实验；10 个 `.pp` 示例纳入编译检查
 - [x] **P13-3** pplang v0.3 参考手册：词法、语法、类型、语义、ABI、CLI，并与 `pplang/spec.md` 对齐
-- [ ] **P13-4** pplc 教程：lexer → parser → sema → monomorphization → LLVM codegen（合并 P2-3、P3-6）
-- [x] **P13-5** ppdb 教程：架构 → 页存储 → SQL → KV/Doc/PDB4 → 索引/事务 → Agent/MCP/验证
+- [x] **P13-4** pplc 教程：15 章 Book + 实现参考完成；以教材模型 → pp 规则推导 → Rust/LLVM 映射 → 反例实验贯穿正规语言/DFA、CFG 文法、TAPL 类型规则、单态化、三地址码/CFG/SSA、机器布局、ABI/链接与 packet parser 综合实验
+- [x] **P13-5** ppdb 教程：设计定位与理论地图 + 15 章 ppdb Book + 实现参考；数据库系统模型 → 页/记录/RID → catalog/SQL/关系代数 → 索引/planner → PDB4/事务 → KV/Doc → Agent/MCP → 双宿主/验证/综合实验
 - [ ] **P13-6** ppos 教程：boot → 中断 → shell → 协程 → 网络 → app（合并 P5-4、P6-6）
 - [ ] **P13-7** 英文内容逐篇补齐；中文稳定内容为缺失翻译的回退来源
 
@@ -143,7 +143,7 @@
 - [x] **B3** `browse` 命令（IP 直连/DNS 解析 + 文本渲染）——真实验证：本地 HTML 页渲染正确
 - [ ] **B4**（可选）gzip 解压 + readability 正文提取（v2，参考 w3m/gumbo/readability）
 
-## Phase 13.6 — WASM 动态加载（app 模型最终形态）
+## Phase 13.6 — 最小 WASM 动态加载（trusted demo）
 
 - [x] **W1** WASM 加载器（magic/version/section 解析 + LEB128，参考 wasmi）
 - [x] **W2** 最小解释器（i32 常量/算术/比较/load/store/store8/local/call；add(3,4)=7 验证）
@@ -184,7 +184,7 @@
 
 - [x] **P16-1** 事务：BEGIN/COMMIT/ROLLBACK（数据库级 before-image UNDO）+ 单会话单写者表锁状态；明确不含 WAL/fsync 崩溃恢复
 - [x] **P16-2** `tools/ppdb-ref`：零依赖 Rust 语义对照 + golden tests（表/KV/Doc/索引/事务）
-- [x] **P16-3** pp-db 教程章节（数据库原理 × pp-lang × Agent）——Starlight 6 章正文 + 导览完成
+- [x] **P16-3** ppdb 教程（数据库原理 × pplang × Agent）——Starlight 设计篇 + 15 章 Book + 实现参考完成
 
 ## Phase 17 — 裸机部署（设计见 docs/baremetal.md）
 
@@ -265,6 +265,69 @@
 
 边界：不做类型参数推导、trait/interface、类型集合、约束求解、specialization、comptime、泛型 extern ABI。
 
+## Phase 21 — ppos 架构闭合：Kernel → LibOS → App → Text Workspace
+
+> 权威蓝图见 `ppos/README.md`。使用 pplang v0.3 实现自研机制；uIP/BearSSL 保持外置 C 静态库 + glue；其他非教学主线且复杂度高的组件可沿用同一胶水模式，不为第三方库新增语言特性。
+> 固定顺序：R0 → R1 → R2 → R3 → R4 → R5 → R6；R1/R2 完成前不继续堆叠上层功能。
+
+### PPOS-R0 — 事实与文档对齐
+
+- [x] **R0-1** `ppos/README.md` 重写：传统 OS + unikernel/libOS + Native/WASM App + Text Workspace 架构蓝图
+- [x] **R0-2** 清理 P8-5/P12-3/P12-4 已完成但未勾选的旧台账；最小 WASM 明确为 trusted demo
+- [x] **R0-3** Exokernel / Drawbridge / Nanos / eggos / xv6 参考思想与“不照搬”边界写入 README
+- [x] **R0-4** `docs/app-model.md` 按 v0.3 重写：函数指针入口、AppContext、capability、Native/WASM 生命周期
+- [x] **R0-5** `docs/ppos-boundaries.md`：固定内存区、source module、extern/C glue 与当前安全边界审计
+
+### PPOS-R1 — Kernel Reliability
+
+- [x] **R1-1** x86-64 exception stubs + pplang v0.3 `TrapFrame`：vector/error/RIP/CR2 输出、panic/halt；`make test-exception` 以 #UD 做 QEMU 回归
+- [x] **R1-2** context/App/MCP/MMIO/DMA 地址通道迁移到 `u64`；stack pointer 使用 load/store64，e1000 支持 64 位 BAR 与 descriptor 地址
+- [x] **R1-3** 保留并解析 Multiboot v1 memory map；中央 region/reserved map；linker symbol 驱动的 kernel/stack/fixed arena/heap 不重叠与 usable-RAM 校验
+- [x] **R1-4** `u64` bounded allocator：Multiboot usable/identity-map 上限、OOM null、header magic/state/canary、非法/double-free 拒绝、`0xDD` poison、地址序 free-list 与相邻合并；`make test-allocator`
+- [x] **R1-5** 统一 QEMU serial runner：`PPOS READY`、monitor→PS/2 命令注入、golden marker、unexpected panic、重复启动/triple-fault、提前退出与 timeout 检测；`make test`
+- [x] **R1-6** SysV stack alignment 自检；IRQ 保存全部 GPR/XMM；kernel 4KiB PTE 按 text/rodata/data 设置 RX/R/RW+NX，启用 CR0.WP/EFER.NXE；ELF PHDR/noexecstack 静态审计纳入 `make test-permissions`
+
+### PPOS-R2 — Library OS Boundary
+
+- [x] **R2-1** 拆分 `kernel.pp`：composition root/kmain 保留 103 行；console+trap、IRQ/input、memory+allocator、task mechanism 与 shell/agent/db policy 分别进入独立模块；Makefile 显式跟踪全部 `.pp` 依赖
+- [x] **R2-2** typed service API：input/task facade、length-aware console、`FileHandle`、HTTP/HTTPS `ServiceBytes`、ppos 侧 `DbTableHandle`/SQL/KV/Doc facade；browser/agent/MCP/shell 不再引用 service-owned response 地址或 ppdb 原始 API（App 参数所有权归 R3，Virtual Terminal handle 归 R4）
+- [x] **R2-3** freestanding `BoundedWriter` + canary 自检；HTTP/TLS request/response、Agent body/history/tool、JSON escape/decode/extract、MCP params/tool result/JSON-RPC response 全部显式 capacity；溢出失败锁定且不发送截断请求；smoke 实测完整 `mcp list`
+- [x] **R2-4** 8KiB kernel log ring + 单调序号 `KernelLogCursor`（wrap/lost 语义）作为 Log Pane 输入源；普通 console 暂时 ring+serial 镜像，panic/exception `cli` 后绕过 ring/lock 独占 raw UART；启动自测与 QEMU `log` 快照回放
+- [x] **R2-5** `pp_glue.h` + `docs/c-glue-contract.md` 固化 u64 pointer/int32 length ABI、ownership/capacity、all-or-nothing send、callback lifetime/non-reentrancy、BearSSL 单会话；修复 TCP/DNS 静默截断、RX wrap、NIC callback 无容量；静态合同检查与目标机 selftest 纳入 `make test`
+
+### PPOS-R3 — Native App Runtime
+
+- [x] **R3-1** `AppDescriptor {name,description,entry,capabilities,stack_size}` 注册表；`fn() -> int` 函数指针替换 hardcoded ID dispatch，profile 注册失败即 panic；list/help 展示 capability/stack，启动 selftest + smoke 实际 `app run sql` 验证间接调用与 exit code（R3-2 将 entry 升级为 `fn(*AppContext) -> int`）
+- [x] **R3-2** `AppContext {terminal,args,capabilities}` + `fn(*AppContext) -> int`；runtime 将 shell source 全量复制到每 app 256B owned slot，NUL 仅作 FFI 兼容且 `str` 保留真实长度；同 app 重入/超限参数显式拒绝，browse/ds/sql entry 不读取 `0x400200/0x400300`；source-mutation ownership selftest + QEMU `APP CONTEXT PASS`
+- [x] **R3-3** 8 槽 task table：`Runnable/Waiting/Dead(exit_code)` 状态机、allocator-owned 独立栈、entry return trampoline、round-robin yield、event wake 与 `u64` PIT deadline；启动 selftest 覆盖 event/timeout/exit/reap，QEMU smoke 验证 `TASK RUNTIME PASS`
+- [x] **R3-4** `AppState {Registered,Running,Exited,Failed}` + task binding + typed wait/reap；bootstrap task 0 仅作 supervisor，shell/browser/agent/sql/db 均以 owned context + 独立栈运行；快捷命令统一进入 App Runtime，db parser 不再借用 shell scratch；启动 lifecycle selftest 与 QEMU SQL/KV/status 回归
+- [ ] **R3-5** Native capability 作为 API 纪律与审计信息；明确不宣称地址空间隔离
+
+### PPOS-R4 — Text Workspace（tmux 风格 CLI 桌面）
+
+- [ ] **R4-1** `KeyEvent`：ASCII + Ctrl/Alt + arrows/function keys；IRQ 只写 input event queue
+- [ ] **R4-2** Virtual Terminal：cell buffer、cursor、scrollback ring、dirty rows、input queue
+- [ ] **R4-3** VGA text + serial ANSI renderer；正常输出只有 renderer 写物理 console
+- [ ] **R4-4** Window/Pane/Layout tree：split/focus/close/fullscreen/status，首版 4×4 固定上限
+- [ ] **R4-5** shell/log/agent/ppdb/browser pane；`ws new/split/focus/run/close`
+- [ ] **R4-6** Native terminal API 与 WASM `fd_write` 汇入同一 pane；QEMU interaction tests
+
+### PPOS-R5 — WASM App Runtime
+
+- [ ] **R5-1** module validator：section/type/function/import/call/LEB128 完整边界
+- [ ] **R5-2** operand/local/call-depth/linear-memory bounds；统一 trap，不允许未知 opcode 静默成功
+- [ ] **R5-3** instruction fuel/timeout；malformed/untrusted module regression corpus
+- [ ] **R5-4** capability Host ABI：console/clock/fs/net/db，只传 handle/offset/length，不暴露 kernel raw address
+- [ ] **R5-5** `.wasm + manifest` 安装/运行；自研路线失控时替换为成熟 freestanding C runtime
+
+### PPOS-R6 — Agent Appliance 与持久化
+
+- [ ] **R6-1** `ppos-agent.elf` / `ppos-db.elf` 专用 image profile；完整 manifest/build profile 延后到工具链阶段
+- [ ] **R6-2** Agent/MCP/JSON 全链路容量与 tool side-effect 边界；API secret 不作为普通可列举文件
+- [ ] **R6-3** TLS 保持 BearSSL/uIP 胶水：补 entropy 能力检测、known-key pin 更新策略；不自研 TLS/密码算法
+- [ ] **R6-4** QEMU block device + block-backed persistence；ppdb 在 ppos 中跨重启恢复
+- [ ] **R6-5** GRUB image、VGA/serial 双输出、T430/82579LM；ARM64 继续搁置
+
 ---
 
 ## 明确不做 / 边界
@@ -272,9 +335,9 @@
 - ❌ GC（eggos 最痛的点，教学不碰）
 - ❌ borrow checker / 所有权（Rust 最痛的点）
 - ❌ SMP / 多核
-- ❌ GUI（图形界面，CLI 浏览器除外）
+- ❌ framebuffer GUI / mouse / floating windows；✅ 规划 tmux 风格 Text Workspace
 - ❌ 完整包管理器（"装程序"用 WASM/脚本 + 文件系统）
-- ⚠️ TLS：从零写不现实 → 已用 **BearSSL 0.6**（knownkey 固定公钥跳过链验证）验证通过：HTTPS GET/POST → DeepSeek 200 OK
+- ⚠️ TLS：保持 **BearSSL 0.6 + uIP glue**，不重写 TLS/密码算法；现有 known-key 路径已验证，entropy/pin 生命周期进入 R6-3
 
 ## 移植参考（不自造的部分）
 
@@ -282,6 +345,7 @@
 - WASM 运行时：参考 wasmi（Rust）
 - TLS：**BearSSL 0.6**（交叉编译 libbearssl.a + freestanding 胶水，knownkey 固定公钥；已端到端验证）
 - 文件系统：参考 xv6 的 FS 设计
+- 复杂非教学主线组件：允许采用成熟 freestanding C 静态库 + 最小 glue + pplang typed wrapper；第三方源码只读，不为接库新增语言特性
 
 ## 关键参考
 
