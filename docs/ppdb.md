@@ -195,4 +195,4 @@ DELETE FROM name WHERE cond;
 - [x] **P15-3b** 关系索引（稳定 row ID 直接定位 + 单列 INT CREATE INDEX + PDB4 + CRUD 维护 + 等值/范围 planner）
 - [x] **P16-1** 事务（BEGIN/COMMIT/ROLLBACK before-image UNDO）+ 单会话单写者表锁状态
 - [x] **P16-2** `tools/ppdb-ref`（Rust 语义对照 + golden tests）
-- [x] **P16-3** Starlight 教程 6 章（数据库原理 × pp-lang × Agent）
+- [x] **P16-3** Starlight ppdb 独立课程（设计定位与理论地图 + 15 章 Book + 实现参考；数据库原理 × pplang × Agent）
