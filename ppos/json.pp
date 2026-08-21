@@ -2,10 +2,10 @@
 
 /* 解 HTTP chunked 传输编码：src 指向第一个 chunk 长度行，解码到 dst，返回解码长度；
    若格式非法（非 chunked），返回 -1 */
-fn unchunk(src: int, dst: int, max: int) -> int {
+fn unchunk(src: int, src_len: int, dst: int, dst_cap: int) -> int {
     let di: int = 0;
     let si: int = 0;
-    while (si < max) {
+    while (si < src_len) {
         /* 读十六进制 chunk 长度（直到 \r 或 ';' 扩展分隔符） */
         let clen: int = 0;
         let c: int = volatile_load8(src + si);
@@ -22,7 +22,7 @@ fn unchunk(src: int, dst: int, max: int) -> int {
             }
             clen = clen * 16 + d;
             si = si + 1;
-            if (si >= max) {
+            if (si >= src_len) {
                 return -1;
             }
             c = volatile_load8(src + si);
@@ -31,11 +31,14 @@ fn unchunk(src: int, dst: int, max: int) -> int {
         while (c == 59) {
             while (c != 13) {
                 si = si + 1;
-                if (si >= max) {
+                if (si >= src_len) {
                     return -1;
                 }
                 c = volatile_load8(src + si);
             }
+        }
+        if (si + 2 > src_len) {
+            return -1;
         }
         si = si + 2;   /* 跳过 \r\n */
         if (clen == 0) {
@@ -43,46 +46,48 @@ fn unchunk(src: int, dst: int, max: int) -> int {
         }
         let i: int = 0;
         while (i < clen) {
+            if (si >= src_len || di >= dst_cap) {
+                return -1;
+            }
             volatile_store8(dst + di, volatile_load8(src + si));
             di = di + 1;
             si = si + 1;
             i = i + 1;
-            if (si >= max || di >= max) {
-                return -1;
-            }
         }
+        if (si + 2 > src_len) { return -1; }
         si = si + 2;   /* 跳过块尾 \r\n */
     }
     return -1;
 }
 
-/* JSON 字符串转义：把 src（slen 字节）转义追加到 dst+dpos，返回新 dpos（处理 " \ 换行） */
-fn json_escape(src: int, slen: int, dst: int, dpos: int) -> int {
+fn writer_write_json_escaped(writer: *BoundedWriter, source: u64, size: int) -> bool {
     let i: int = 0;
-    while (i < slen) {
-        let c: int = volatile_load8(src + i);
-        if (c == 34) {       /* '"' */
-            volatile_store8(dst + dpos, 92);
-            dpos = dpos + 1;
-            volatile_store8(dst + dpos, 34);
-            dpos = dpos + 1;
-        } else if (c == 92) {   /* '\' */
-            volatile_store8(dst + dpos, 92);
-            dpos = dpos + 1;
-            volatile_store8(dst + dpos, 92);
-            dpos = dpos + 1;
-        } else if (c == 10) {   /* 换行 */
-            volatile_store8(dst + dpos, 92);
-            dpos = dpos + 1;
-            volatile_store8(dst + dpos, 110);
-            dpos = dpos + 1;
+    while (i < size && !writer.failed) {
+        let c: int = volatile_load8(source + i);
+        if (c == 34) {
+            writer_write_str(writer, "\\\"");
+        } else if (c == 92) {
+            writer_write_str(writer, "\\\\");
+        } else if (c == 10) {
+            writer_write_str(writer, "\\n");
         } else {
-            volatile_store8(dst + dpos, c);
-            dpos = dpos + 1;
+            writer_write_byte(writer, c);
         }
         i = i + 1;
     }
-    return dpos;
+    return !writer.failed;
+}
+
+fn writer_write_json_cstr(writer: *BoundedWriter, source: u64, max_size: int) -> bool {
+    let size: int = 0;
+    while (size < max_size && volatile_load8(source + size) != 0) {
+        size = size + 1;
+    }
+    if (size == max_size) {
+        writer.failed = true;
+        return false;
+    }
+    return writer_write_json_escaped(writer, source, size);
 }
 
 /* 判断 JSON 文本中是否存在 "key": 字段（数组/对象/字符串皆可） */
@@ -109,7 +114,7 @@ fn json_has_field(src: int, key: str) -> int {
 }
 
 /* 在 JSON 文本中，从 "marker": 之后开始找 "key":" 并提取字符串值，返回长度 */
-fn json_find_after(src: int, marker: str, key: str, out: int) -> int {
+fn json_find_after(src: int, marker: str, key: str, out: int, out_cap: int) -> int {
     let i: int = 0;
     /* 先找 marker */
     let found: int = 0;
@@ -139,11 +144,14 @@ fn json_find_after(src: int, marker: str, key: str, out: int) -> int {
         return 0;
     }
     /* 从 i 开始找 "key":" */
-    return json_find_str(src + i, key, out);
+    return json_find_str(src + i, key, out, out_cap);
 }
 
 /* 在 JSON 文本中找 "key":" 并提取字符串值（处理 \n \t \" \\ \r 转义），返回长度 */
-fn json_find_str(src: int, key: str, out: int) -> int {
+fn json_find_str(src: int, key: str, out: int, out_cap: int) -> int {
+    if (out_cap <= 0) {
+        return -1;
+    }
     let i: int = 0;
     while (volatile_load8(src + i) != 0) {
         if (volatile_load8(src + i) == 34) {   /* '"' */
@@ -162,6 +170,10 @@ fn json_find_str(src: int, key: str, out: int) -> int {
                         let o: int = 0;
                         while (true) {
                             let c: int = volatile_load8(src + j);
+                            if (o >= out_cap - 1 && c != 34 && c != 0) {
+                                volatile_store8(out + out_cap - 1, 0);
+                                return -1;
+                            }
                             if (c == 92) {   /* '\' 转义 */
                                 let e: int = volatile_load8(src + j + 1);
                                 if (e == 110) {

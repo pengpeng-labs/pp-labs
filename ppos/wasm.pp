@@ -216,19 +216,19 @@ fn wasm_parse(src: int, len: int) -> int {
 
 /* 打印解析摘要（调试/验证） */
 fn wasm_dump() {
-    serial_print("wasm: types=");
+    console_write("wasm: types=");
     print_int(wasm_type_count);
-    serial_print(" imports=");
+    console_write(" imports=");
     print_int(wasm_import_count);
-    serial_print(" funcs=");
+    console_write(" funcs=");
     print_int(wasm_func_count);
-    serial_print(" code=");
+    console_write(" code=");
     print_int(wasm_code_count);
-    serial_print(" mem=");
+    console_write(" mem=");
     print_int(wasm_mem_pages);
-    serial_print(" exports=");
+    console_write(" exports=");
     print_int(wasm_export_count);
-    serial_putc(10);
+    console_putc(10);
 }
 
 /* ---- W2 解释器 ---- */
@@ -365,7 +365,7 @@ fn wasm_run(func: int, a0: int, a1: int) -> int {
                     let l0: int = volatile_load32(wasm_mem + iovs + 4);
                     let k: int = 0;
                     while (k < l0) {
-                        serial_putc(volatile_load8(wasm_mem + p0 + k));
+                        console_putc(volatile_load8(wasm_mem + p0 + k));
                         k = k + 1;
                     }
                     ws_push(0);   /* errno 0 */
@@ -399,13 +399,13 @@ fn wasm_run(func: int, a0: int, a1: int) -> int {
             pc = pc + 2;
         } else {
             /* 未知指令：停止 */
-            serial_print("wasm: op ");
+            console_write("wasm: op ");
             print_hex(op);
-            serial_print(" pc=");
+            console_write(" pc=");
             print_int(pc);
-            serial_print(" bend=");
+            console_write(" bend=");
             print_int(bend);
-            serial_putc(10);
+            console_putc(10);
             return 0;
         }
     }

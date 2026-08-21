@@ -139,10 +139,10 @@ fn fs_write_bin_at(idx: int, data: int, len: int, off: int) {
 fn fs_print(idx: int) {
     let j: int = 0;
     while (j < fs_size[idx]) {
-        serial_putc(fs_pool[fs_off[idx] + j]);
+        console_putc(fs_pool[fs_off[idx] + j]);
         j = j + 1;
     }
-    serial_putc(10);
+    console_putc(10);
 }
 
 /* 拷贝文件内容到 buf，返回长度 */
@@ -171,39 +171,14 @@ fn fs_list() {
         if (fs_used[i] == 1) {
             let j: int = 0;
             while (fs_name[i][j] != 0) {
-                serial_putc(fs_name[i][j]);
+                console_putc(fs_name[i][j]);
                 j = j + 1;
             }
-            serial_putc(32);
+            console_putc(32);
         }
         i = i + 1;
     }
-    serial_putc(10);
-}
-
-/* 把 FS 文件列表拼成字符串写入 buf（逗号分隔），返回长度 */
-fn fs_list_str(buf: int) -> int {
-    let bi: int = 0;
-    let first: int = 1;
-    let i: int = 0;
-    while (i < 16) {
-        if (fs_used[i] == 1) {
-            if (first == 0) {
-                volatile_store8(buf + bi, 44);   /* ',' */
-                bi = bi + 1;
-            }
-            first = 0;
-            let j: int = 0;
-            while (fs_name[i][j] != 0) {
-                volatile_store8(buf + bi, fs_name[i][j]);
-                bi = bi + 1;
-                j = j + 1;
-            }
-        }
-        i = i + 1;
-    }
-    volatile_store8(buf + bi, 0);
-    return bi;
+    console_putc(10);
 }
 
 fn fs_remove(name: str) -> int {
@@ -213,4 +188,90 @@ fn fs_remove(name: str) -> int {
     }
     fs_used[i] = 0;
     return 0;
+}
+
+/* Library OS facade. Raw fs_* slot functions remain for the ppdb host adapter. */
+struct FileHandle {
+    id: int,
+}
+
+fn file_open(name: str) -> FileHandle {
+    let handle: FileHandle;
+    handle.id = fs_find(name);
+    return handle;
+}
+
+fn file_open_or_create(name: str) -> FileHandle {
+    let handle: FileHandle = file_open(name);
+    if (handle.id < 0) {
+        handle.id = fs_create(name);
+    }
+    return handle;
+}
+
+fn file_is_valid(handle: FileHandle) -> bool {
+    return handle.id >= 0;
+}
+
+fn file_read_all(handle: FileHandle, destination: u64) -> int {
+    if (!file_is_valid(handle)) {
+        return -1;
+    }
+    return fs_read(handle.id, destination as int);
+}
+
+fn file_write_text(handle: FileHandle, data: str) -> bool {
+    if (!file_is_valid(handle)) {
+        return false;
+    }
+    fs_write(handle.id, data);
+    return true;
+}
+
+fn file_write_bytes(handle: FileHandle, data: u64, size: int) -> bool {
+    if (!file_is_valid(handle)) {
+        return false;
+    }
+    fs_write_bin(handle.id, data as int, size);
+    return true;
+}
+
+fn file_print(handle: FileHandle) -> bool {
+    if (!file_is_valid(handle)) {
+        return false;
+    }
+    fs_print(handle.id);
+    return true;
+}
+
+fn file_remove(name: str) -> bool {
+    return fs_remove(name) == 0;
+}
+
+fn file_list() {
+    fs_list();
+}
+
+fn file_list_to_buffer(destination: u64, capacity: int) -> int {
+    let writer: BoundedWriter = writer_new(destination, capacity);
+    let first: bool = true;
+    let i: int = 0;
+    while (i < 16 && !writer.failed) {
+        if (fs_used[i] == 1) {
+            if (!first) {
+                writer_write_byte(&writer, 44);
+            }
+            first = false;
+            let j: int = 0;
+            while (j < 32 && fs_name[i][j] != 0) {
+                writer_write_byte(&writer, fs_name[i][j]);
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    if (!writer_terminate(&writer)) {
+        return -1;
+    }
+    return writer.len;
 }

@@ -1,5 +1,6 @@
 /* TLS 胶水层：向 pp-lang 暴露 BearSSL 符号 + 固定服务器公钥（knownkey 验证） */
 #include "bearssl.h"
+#include "pp_glue.h"
 
 static unsigned char rsa_n[] = {
     0xD2,0x2F,0x98,0xB4,0x5D,0x0D,0x3A,0x36,0x19,0x1D,0x46,0x45,
@@ -33,6 +34,29 @@ static br_rsa_public_key server_key = {
 };
 
 static br_x509_knownkey_context knownkey_ctx;
+static int tls_session_active;
+
+int32_t pp_tls_contract_check(int32_t sc_capacity, int32_t xc_capacity,
+    int32_t io_capacity)
+{
+    return sc_capacity >= (int32_t)sizeof(br_ssl_client_context)
+        && xc_capacity >= (int32_t)sizeof(br_x509_minimal_context)
+        && io_capacity >= (int32_t)BR_SSL_BUFSIZE_BIDI;
+}
+
+int32_t pp_tls_session_begin(void)
+{
+    if (tls_session_active) {
+        return PP_GLUE_EBUSY;
+    }
+    tls_session_active = 1;
+    return 0;
+}
+
+void pp_tls_session_end(void)
+{
+    tls_session_active = 0;
+}
 
 /* 设置 fixed knownkey 验证（跳过链验证，只校验服务器公钥匹配） */
 void pp_tls_set_knownkey(br_ssl_client_context *sc)

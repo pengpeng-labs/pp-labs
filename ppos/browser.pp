@@ -1,10 +1,11 @@
 /* browser.pp：HTML → 纯文本 + 网页抓取（库层：app 可复用） */
 
-static web_body_len: int = 0;   /* 最近一次抓取的 body 长度 */
+static browser_text: [4096]u8;
 
-/* 抓取网页：host 为 "host[:port]" 字符串，返回 body 在 0x650000 的偏移（0 表示失败）；
+/* 抓取网页：host 为 "host[:port]" 字符串，返回 service-owned body view；
    流程：端口解析 → IP 直解/DNS → ARP → HTTP GET → 定位 body */
-fn web_fetch(host: str) -> int {
+fn web_fetch(host: str) -> ServiceBytes {
+    let result: ServiceBytes = service_bytes_empty();
     let port: int = 80;
     let pj: int = 0;
     while (volatile_load8(ptr_to_int(host + pj)) != 0 && volatile_load8(ptr_to_int(host + pj)) != 58) {
@@ -76,28 +77,47 @@ fn web_fetch(host: str) -> int {
         hlt();
     }
     /* HTTP GET / */
-    let rl: int = http_get_host(ptr_to_int(&ip[0]), port, host, "/");
-    if (rl <= 0) {
-        return 0;
+    let raw: ServiceBytes = http_get_view(ptr_to_int(&ip[0]), port, host, "/");
+    let rl: int = raw.len;
+    if (!raw.ok) {
+        return result;
     }
     /* 定位 body（\r\n\r\n 之后） */
     let hi: int = 0;
+    let header_found: bool = false;
     while (hi < rl - 3) {
-        if (volatile_load8(0x650000 + hi) == 13
-            && volatile_load8(0x650000 + hi + 1) == 10
-            && volatile_load8(0x650000 + hi + 2) == 13
-            && volatile_load8(0x650000 + hi + 3) == 10) {
+        if (volatile_load8(raw.data + hi) == 13
+            && volatile_load8(raw.data + hi + 1) == 10
+            && volatile_load8(raw.data + hi + 2) == 13
+            && volatile_load8(raw.data + hi + 3) == 10) {
+            header_found = true;
             break;
         }
         hi = hi + 1;
+    }
+    if (!header_found) {
+        return result;
     }
     let body_off: int = hi + 4;
     let blen: int = rl - body_off;
     if (blen < 0) {
         blen = 0;
     }
-    web_body_len = blen;
-    return body_off;
+    result.data = raw.data + body_off;
+    result.len = blen;
+    result.ok = true;
+    return result;
+}
+
+fn web_render_text(response: ServiceBytes) -> ServiceBytes {
+    let result: ServiceBytes = service_bytes_empty();
+    if (!response.ok) {
+        return result;
+    }
+    result.data = ptr_to_int(&browser_text[0]);
+    result.len = html_to_text(response.data as int, response.len, result.data as int);
+    result.ok = true;
+    return result;
 }
 
 /* 比较 src[i..] 与实体名 name，长度 n；匹配返回 1 */

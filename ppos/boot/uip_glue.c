@@ -15,11 +15,7 @@
 #include <string.h>
 #include "uip.h"
 #include "uip_arp.h"
-
-/* ---- pp 侧提供的函数（链接时解析） ---- */
-extern int pp_e1000_recv(uint8_t *dst);   /* 返回帧长，0=无帧 */
-extern void pp_e1000_send(uint8_t *buf, int len);
-extern void pp_udp_frame(uint8_t *buf, int len);   /* UDP 帧暂存（DNS） */
+#include "pp_glue.h"
 
 /* ---- 本机配置（pp 侧设置） ---- */
 static uint8_t my_ip[4] = {10, 0, 2, 15};
@@ -38,6 +34,8 @@ static int rxbuf_full = 0;
 static volatile int conn_established = 0;
 static volatile int conn_closed = 0;
 static volatile int conn_timedout = 0;
+static int glue_last_error = 0;
+static int glue_poll_active = 0;
 
 /* TCP 发送缓冲（uIP 模型：数据在 appcall 的 POLL 里 uip_send） */
 static uint8_t tcp_pending[2048];
@@ -62,19 +60,25 @@ void uip_appcall(void)
     /* 新数据：从 uip_appdata 拷到接收缓冲 */
     if (uip_newdata()) {
         int n = uip_datalen();
-        if (n > 0 && n <= (int)sizeof(rxbuf)) {
-            int space = rxbuf_full ? 0 : (int)sizeof(rxbuf) - rxbuf_head;
-            if (n > space) {
-                n = space;   /* 截断（不会发生：窗口 ≤ 缓冲） */
+        int free_bytes = rxbuf_full ? 0
+            : (rxbuf_tail > rxbuf_head
+                ? rxbuf_tail - rxbuf_head
+                : (int)sizeof(rxbuf) - rxbuf_head + rxbuf_tail);
+        if (n < 0 || n > free_bytes) {
+            glue_last_error = PP_GLUE_EOVERFLOW;
+            conn_closed = 1;
+            uip_abort();
+        } else if (n > 0) {
+            int first = n;
+            if (first > (int)sizeof(rxbuf) - rxbuf_head) {
+                first = (int)sizeof(rxbuf) - rxbuf_head;
             }
-            memcpy(&rxbuf[rxbuf_head], uip_appdata, n);
-            rxbuf_head += n;
-            if (rxbuf_head >= (int)sizeof(rxbuf)) {
-                rxbuf_head = 0;
+            memcpy(&rxbuf[rxbuf_head], uip_appdata, first);
+            if (n > first) {
+                memcpy(rxbuf, (uint8_t *)uip_appdata + first, n - first);
             }
-            if (rxbuf_head == rxbuf_tail) {
-                rxbuf_full = 1;
-            }
+            rxbuf_head = (rxbuf_head + n) % (int)sizeof(rxbuf);
+            rxbuf_full = rxbuf_head == rxbuf_tail;
         }
     }
     /* UIP_POLL（周期/可发送）：发出待发 TCP 数据。
@@ -108,20 +112,22 @@ void uip_glue_init(void)
     rxbuf_head = rxbuf_tail = 0;
     rxbuf_full = 0;
     conn_established = conn_closed = conn_timedout = 0;
-}
-
-void uip_glue_set_ip(int b0, int b1, int b2, int b3)
-{
-    my_ip[0] = b0; my_ip[1] = b1; my_ip[2] = b2; my_ip[3] = b3;
-    uip_sethostaddr(my_ip);
+    tcp_pending_len = 0;
+    dns_pending_len = 0;
+    glue_last_error = 0;
+    glue_poll_active = 0;
 }
 
 /* 发起连接：ip 指向 4 字节 IP（大端网络序转 uIP 格式） */
-int uip_glue_connect(uint8_t *ip, uint16_t port)
+int32_t uip_glue_connect(const uint8_t *ip, int32_t port)
 {
     uip_ipaddr_t a;
+    if (ip == NULL || port <= 0 || port > 65535 || glue_poll_active) {
+        return PP_GLUE_EINVAL;
+    }
     uip_ipaddr(&a, ip[0], ip[1], ip[2], ip[3]);
     conn_established = conn_closed = conn_timedout = 0;
+    glue_last_error = 0;
     tcp_pending_len = 0;
     dns_pending_len = 0;
     /* 每轮连接重置接收环形缓冲：跨轮残留会污染下一轮的 TLS 记录，
@@ -138,16 +144,16 @@ int uip_glue_connect(uint8_t *ip, uint16_t port)
 /* 发送数据（追加进 tcp_pending，TCP POLL 时一次性发出）。
    TLS 握手会连续多次 send（ClientKeyExchange + CCS + Finished 各一个 sendrec），
    覆盖式缓冲会丢前面的记录——必须累积。 */
-int uip_glue_send(uint8_t *buf, int len)
+int32_t uip_glue_send(const uint8_t *buf, int32_t len)
 {
-    if (len < 0) {
-        return -1;
+    if (len < 0 || (len > 0 && buf == NULL)) {
+        return PP_GLUE_EINVAL;
     }
-    if (tcp_pending_len + len > (int)sizeof(tcp_pending)) {
-        len = (int)sizeof(tcp_pending) - tcp_pending_len;
-        if (len <= 0) {
-            return 0;
-        }
+    if (len > (int32_t)sizeof(tcp_pending)) {
+        return PP_GLUE_EOVERFLOW;
+    }
+    if (tcp_pending_len > (int)sizeof(tcp_pending) - len) {
+        return PP_GLUE_EBUSY;
     }
     memcpy(tcp_pending + tcp_pending_len, buf, len);
     tcp_pending_len += len;
@@ -155,8 +161,11 @@ int uip_glue_send(uint8_t *buf, int len)
 }
 
 /* 取接收数据，返回长度 */
-int uip_glue_recv(uint8_t *buf, int cap)
+int32_t uip_glue_recv(uint8_t *buf, int32_t cap)
 {
+    if (cap < 0 || (cap > 0 && buf == NULL)) {
+        return PP_GLUE_EINVAL;
+    }
     int n = 0;
     while (n < cap && !(rxbuf_head == rxbuf_tail && !rxbuf_full)) {
         buf[n++] = rxbuf[rxbuf_tail++];
@@ -183,6 +192,11 @@ int uip_glue_timedout(void)
     return conn_timedout;
 }
 
+int32_t uip_glue_last_error(void)
+{
+    return glue_last_error;
+}
+
 /* UDP 应用回调（DNS 响应 + 发送请求）：uIP 周期/UDP 数据到达时调用 */
 void uip_udp_appcall(void)
 {
@@ -190,7 +204,6 @@ void uip_udp_appcall(void)
         /* 收到 DNS 响应：查询已送达，停止重发 */
         dns_pending_len = 0;
         int n = uip_datalen();
-        extern void pp_dns_recv(uint8_t *buf, int len);
         if (n > 0) {
             pp_dns_recv(uip_appdata, n);
         }
@@ -203,11 +216,16 @@ void uip_udp_appcall(void)
 }
 
 /* DNS 查询：数据存 pending，UDP 周期时发出（经 uIP UDP 到 10.0.2.3:53） */
-int uip_glue_dns_send(uint8_t *buf, int len)
+int32_t uip_glue_dns_send(const uint8_t *buf, int32_t len)
 {
-
     uip_ipaddr_t dnsip;
     static struct uip_udp_conn *dns_conn = NULL;
+    if (len < 0 || (len > 0 && buf == NULL)) {
+        return PP_GLUE_EINVAL;
+    }
+    if (len > (int32_t)sizeof(dns_pending)) {
+        return PP_GLUE_EOVERFLOW;
+    }
     uip_ipaddr(&dnsip, 10, 0, 2, 3);
     if (dns_conn == NULL) {
         dns_conn = uip_udp_new(&dnsip, HTONS(53));
@@ -216,12 +234,9 @@ int uip_glue_dns_send(uint8_t *buf, int len)
         }
     }
     uip_udp_bind(dns_conn, HTONS(12345));
-    if (len > (int)sizeof(dns_pending)) {
-        len = sizeof(dns_pending);
-    }
     memcpy(dns_pending, buf, len);
     dns_pending_len = len;
-    return 0;
+    return len;
 }
 
 /* 主轮询（uIP unix 示例 main.c 模板）：
@@ -233,20 +248,32 @@ int uip_glue_poll(void)
 {
     static uint8_t frame[1600];
     int handled = 0;
-    extern uint32_t pp_ticks(void);
     static uint32_t last_periodic = 0;
     static uint32_t last_arp = 0;
     uint32_t now = pp_ticks() / 100;   /* 秒 */
 
-    /* 1. 收帧 → uIP */
-    int len = pp_e1000_recv(frame);
+    if (glue_poll_active) {
+        glue_last_error = PP_GLUE_EBUSY;
+        return PP_GLUE_EBUSY;
+    }
+    glue_poll_active = 1;
+
+    /* 1. 收帧 → uIP. Callback must honor the supplied frame capacity. */
+    int len = pp_e1000_recv(frame, (int32_t)sizeof(frame));
+    if (len < 0) {
+        glue_last_error = len;
+        glue_poll_active = 0;
+        return len;
+    }
     if (len > 0) {
         if (len > (int)sizeof(uip_buf)) {
             len = sizeof(uip_buf);
         }
         memcpy(uip_buf, frame, len);
         uip_len = len;
-        if (frame[12] == 0x08 && frame[13] == 0x00) {
+        if (len < 14) {
+            glue_last_error = PP_GLUE_EINVAL;
+        } else if (frame[12] == 0x08 && frame[13] == 0x00) {
             /* IPv4 帧 */
             uip_arp_ipin();
             if (uip_len > 0) {
@@ -254,7 +281,9 @@ int uip_glue_poll(void)
                 if (uip_len > 0) {
                     uip_arp_out();
                     if (uip_len > 0) {
-                        pp_e1000_send(uip_buf, uip_len);
+                        if (pp_e1000_send(uip_buf, uip_len) < 0) {
+                            glue_last_error = PP_GLUE_EOVERFLOW;
+                        }
                     }
                 }
             }
@@ -262,7 +291,9 @@ int uip_glue_poll(void)
             /* ARP 帧 */
             uip_arp_arpin();
             if (uip_len > 0) {
-                pp_e1000_send(uip_buf, uip_len);
+                if (pp_e1000_send(uip_buf, uip_len) < 0) {
+                    glue_last_error = PP_GLUE_EOVERFLOW;
+                }
             }
         }
         handled = 1;
@@ -271,8 +302,7 @@ int uip_glue_poll(void)
     /* 2. 周期驱动（0.5s 节拍，uIP 重传/RTO 依赖此节拍） */
     if (now - last_periodic >= 1 || (last_periodic == 0 && now >= 1)) {
         last_periodic = now;
-        extern void pp_dbg(const char *s);
-        pp_dbg("[g]tick ");
+        pp_dbg((const uint8_t *)"[g]tick ", 8);
         int i;
         for (i = 0; i < UIP_CONNS; ++i) {
             if (uip_conn_active(i)) {
@@ -280,7 +310,9 @@ int uip_glue_poll(void)
                 if (uip_len > 0) {
                     uip_arp_out();
                     if (uip_len > 0) {
-                        pp_e1000_send(uip_buf, uip_len);
+                        if (pp_e1000_send(uip_buf, uip_len) < 0) {
+                            glue_last_error = PP_GLUE_EOVERFLOW;
+                        }
                     }
                 }
                 handled = 1;
@@ -293,7 +325,9 @@ int uip_glue_poll(void)
                 if (uip_len > 0) {
                     uip_arp_out();
                     if (uip_len > 0) {
-                        pp_e1000_send(uip_buf, uip_len);
+                        if (pp_e1000_send(uip_buf, uip_len) < 0) {
+                            glue_last_error = PP_GLUE_EOVERFLOW;
+                        }
                     }
                 }
                 handled = 1;
@@ -307,12 +341,36 @@ int uip_glue_poll(void)
         }
     }
 
+    glue_poll_active = 0;
     return handled;
 }
 
 /* uIP 需要的时钟（周期驱动用；返回秒）——由 pp 侧 tick 提供 */
 uint32_t uip_clock(void)
 {
-    extern uint32_t pp_ticks(void);
     return pp_ticks() / 100;   /* 100Hz tick → 秒 */
+}
+
+/* Runs before NIC initialization; validates failure atomicity without uIP I/O. */
+int32_t uip_glue_contract_selftest(void)
+{
+    uint8_t data[sizeof(tcp_pending)];
+    uint8_t one = 0xA5;
+    int32_t ok;
+    memset(data, 0x5A, sizeof(data));
+    tcp_pending_len = 0;
+    ok = uip_glue_send(data, (int32_t)sizeof(data)) == (int32_t)sizeof(data)
+        && uip_glue_send(&one, 1) == PP_GLUE_EBUSY
+        && tcp_pending_len == (int)sizeof(tcp_pending)
+        && tcp_pending[sizeof(tcp_pending) - 1] == 0x5A
+        && uip_glue_send(NULL, 1) == PP_GLUE_EINVAL
+        && uip_glue_send(data, (int32_t)sizeof(data) + 1) == PP_GLUE_EOVERFLOW
+        && uip_glue_recv(NULL, 1) == PP_GLUE_EINVAL
+        && uip_glue_dns_send(NULL, 1) == PP_GLUE_EINVAL
+        && uip_glue_dns_send(data, (int32_t)sizeof(dns_pending) + 1)
+            == PP_GLUE_EOVERFLOW;
+    tcp_pending_len = 0;
+    dns_pending_len = 0;
+    glue_last_error = 0;
+    return ok;
 }

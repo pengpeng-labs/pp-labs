@@ -1,15 +1,15 @@
 /* agent.pp：LLM agent——多轮对话 + 工具调用（DeepSeek function calling） */
 
 /* 工具执行：走 MCP 协议层（mcp_call）；args 为工具参数 JSON（0x673300） */
-fn agent_run_tool(name: int, args: int, out: int) -> int {
-    return mcp_call(name, args, out);
+fn agent_run_tool(name: u64, args: u64, out: u64, out_cap: int) -> int {
+    return mcp_call(name, args, out, out_cap);
 }
 
 /* 从文件系统加载 API key 到 0x400600 */
 fn agent_load_key() {
-    let kidx: int = fs_find("key");
-    if (kidx >= 0) {
-        fs_read(kidx, 0x400600);
+    let key_file: FileHandle = file_open("key");
+    if (file_is_valid(key_file)) {
+        file_read_all(key_file, 0x400600 as u64);
     } else {
         let kd: str = "sk-REPLACE_WITH_REAL_KEY";
         let t0: int = 0;
@@ -21,20 +21,9 @@ fn agent_load_key() {
     }
 }
 
-/* 把 str 追加到 dst+dpos，返回新 dpos */
-fn agent_append(dst: int, dpos: int, s: str) -> int {
-    let i: int = 0;
-    while (s[i] != 0) {
-        volatile_store8(dst + dpos, s[i]);
-        dpos = dpos + 1;
-        i = i + 1;
-    }
-    return dpos;
-}
-
 /* 主流程：text = 用户输入地址，tlen = 长度。
    循环 ≤3 轮：带 tools 请求 → 若有 tool_calls 则执行并回传，否则打印回答并持久化历史 */
-fn agent_chat(text: int, tlen: int) {    agent_load_key();
+fn agent_chat(text: u64, tlen: int) {    agent_load_key();
     /* ARP 解析网关 */
     let gw: [4]u8;
     gw[0] = 10;
@@ -51,76 +40,88 @@ fn agent_chat(text: int, tlen: int) {    agent_load_key();
         hlt();
         ht2 = ht2 + 1;
     }
-        /* 工具消息区（跨轮累积：assistant tool_calls + tool 结果），长度 @0x676800 */
-        let tmsg_len: int = 0;
+        /* 工具消息区（跨轮累积：assistant tool_calls + tool 结果）。 */
+        let tool_messages: BoundedWriter = writer_new(0x676000 as u64, 2048);
         let round: int = 0;
         while (round < 3) {
             round = round + 1;
         /* 构建 body */
-        let body: int = 0x66D000;
-        let bi: int = 0;
-        bi = agent_append(body, bi, "{\"model\":\"deepseek-chat\",\"messages\":[");
+        let body: BoundedWriter = writer_new(0x66D000 as u64, 4096);
+        writer_write_str(&body, "{\"model\":\"deepseek-chat\",\"messages\":[");
         /* 历史 */
         let hist_len: int = volatile_load32(0x675800);
-        let hj: int = 0;
-        while (hj < hist_len && hj < 1536) {
-            volatile_store8(body + bi, volatile_load8(0x675000 + hj));
-            bi = bi + 1;
-            hj = hj + 1;
+        let history_size: int = hist_len;
+        if (history_size > 1536) {
+            history_size = 1536;
         }
+        writer_write_bytes(&body, 0x675000 as u64, history_size);
         if (round == 1) {
             /* 第一轮：追加 user 消息，并存到 0x674000 供后续轮复用 */
-            bi = agent_append(body, bi, "{\"role\":\"user\",\"content\":\"");
-            bi = json_escape(text, tlen, body, bi);
-            bi = agent_append(body, bi, "\"},");
-            let uj: int = 0;
-            while (uj < tlen) {
-                volatile_store8(0x674000 + uj, volatile_load8(text + uj));
-                uj = uj + 1;
+            writer_write_str(&body, "{\"role\":\"user\",\"content\":\"");
+            writer_write_json_escaped(&body, text, tlen);
+            writer_write_str(&body, "\"},");
+            let user_copy: BoundedWriter = writer_new(0x674000 as u64, 2048);
+            writer_write_bytes(&user_copy, text, tlen);
+            if (user_copy.failed) {
+                console_write("DS: user message too large\n");
+                return;
             }
             volatile_store32(0x674800, tlen);
         } else {
             /* 后续轮：历史 + user（0x674000）+ 累积的工具消息 */
-            bi = agent_append(body, bi, "{\"role\":\"user\",\"content\":\"");
+            writer_write_str(&body, "{\"role\":\"user\",\"content\":\"");
             let ul: int = volatile_load32(0x674800);
-            bi = json_escape(0x674000, ul, body, bi);
-            bi = agent_append(body, bi, "\"},");
-            let tj: int = 0;
-            while (tj < tmsg_len && tj < 1024) {
-                volatile_store8(body + bi, volatile_load8(0x676000 + tj));
-                bi = bi + 1;
-                tj = tj + 1;
+            if (ul < 0 || ul > 2048) {
+                console_write("DS: invalid saved user length\n");
+                return;
             }
+            writer_write_json_escaped(&body, 0x674000 as u64, ul);
+            writer_write_str(&body, "\"},");
+            let tool_size: int = tool_messages.len;
+            if (tool_size > 1024) { tool_size = 1024; }
+            writer_write_bytes(&body, tool_messages.data, tool_size);
         }
         /* 去掉 messages 数组的尾随逗号（历史/工具消息以 ',' 结尾） */
-        if (bi > 0 && volatile_load8(body + bi - 1) == 44) {
-            bi = bi - 1;
+        if (body.len > 0 && volatile_load8(body.data + body.len - 1) == 44) {
+            body.len = body.len - 1;
         }
         /* tools 定义（v1：ls + sql/kv/doc——pp-db 数据工具） */
-        bi = agent_append(body, bi, "],\"tools\":[");
-        bi = agent_append(body, bi, "{\"type\":\"function\",\"function\":{\"name\":\"ls\",\"description\":\"List files in the pp-os file system\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[]}}},");
-        bi = agent_append(body, bi, "{\"type\":\"function\",\"function\":{\"name\":\"sql\",\"description\":\"Execute SQL against the pp-db database: CREATE TABLE, INSERT INTO, SELECT, UPDATE, DELETE, DROP TABLE\",\"parameters\":{\"type\":\"object\",\"properties\":{\"sql\":{\"type\":\"string\",\"description\":\"the SQL statement\"}},\"required\":[\"sql\"]}}},");
-        bi = agent_append(body, bi, "{\"type\":\"function\",\"function\":{\"name\":\"kv\",\"description\":\"Key-value store: get, put or delete a key\",\"parameters\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"get\",\"put\",\"del\"]},\"key\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"required\":[\"op\",\"key\"]}}},");
-        bi = agent_append(body, bi, "{\"type\":\"function\",\"function\":{\"name\":\"doc\",\"description\":\"JSON document store: get or put a named document\",\"parameters\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"get\",\"put\"]},\"name\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"op\",\"name\"]}}}],\"stream\":false}");
+        writer_write_str(&body, "],\"tools\":[");
+        writer_write_str(&body, "{\"type\":\"function\",\"function\":{\"name\":\"ls\",\"description\":\"List files in the pp-os file system\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[]}}},");
+        writer_write_str(&body, "{\"type\":\"function\",\"function\":{\"name\":\"sql\",\"description\":\"Execute SQL against the pp-db database: CREATE TABLE, INSERT INTO, SELECT, UPDATE, DELETE, DROP TABLE\",\"parameters\":{\"type\":\"object\",\"properties\":{\"sql\":{\"type\":\"string\",\"description\":\"the SQL statement\"}},\"required\":[\"sql\"]}}},");
+        writer_write_str(&body, "{\"type\":\"function\",\"function\":{\"name\":\"kv\",\"description\":\"Key-value store: get, put or delete a key\",\"parameters\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"get\",\"put\",\"del\"]},\"key\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"required\":[\"op\",\"key\"]}}},");
+        writer_write_str(&body, "{\"type\":\"function\",\"function\":{\"name\":\"doc\",\"description\":\"JSON document store: get or put a named document\",\"parameters\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"get\",\"put\"]},\"name\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"op\",\"name\"]}}}],\"stream\":false}");
+        if (body.failed) {
+            console_write("DS: request body too large\n");
+            return;
+        }
         /* POST */
-        let rl: int = https_post(ptr_to_int(&dns_resolved[0]), 443, hst, "/v1/chat/completions", body, bi);
-        if (rl <= 0) {
+        let response: ServiceBytes = https_post(ptr_to_int(&dns_resolved[0]), 443, hst, "/v1/chat/completions", body.data, body.len);
+        let rl: int = response.len;
+        if (!response.ok) {
             return;
         }
         /* 定位 body */
         let hi: int = 0;
+        let header_found: bool = false;
         while (hi < rl - 3) {
-            if (volatile_load8(0x670000 + hi) == 13
-                && volatile_load8(0x670000 + hi + 1) == 10
-                && volatile_load8(0x670000 + hi + 2) == 13
-                && volatile_load8(0x670000 + hi + 3) == 10) {
+            if (volatile_load8(response.data + hi) == 13
+                && volatile_load8(response.data + hi + 1) == 10
+                && volatile_load8(response.data + hi + 2) == 13
+                && volatile_load8(response.data + hi + 3) == 10) {
+                header_found = true;
                 break;
             }
             hi = hi + 1;
         }
-        let bstart: int = 0x670000 + hi + 4;
+        if (!header_found) {
+            console_write("DS: invalid HTTP response\n");
+            return;
+        }
+        let bstart: int = (response.data + hi + 4) as int;
         /* 解 chunked */
-        let jl: int = unchunk(bstart, 0x672000, 4096);
+        let body_available: int = rl - (hi + 4);
+        let jl: int = unchunk(bstart, body_available, 0x672000, 4095);
         let jsrc: int = 0x672000;
         if (jl < 0) {
             jsrc = bstart;
@@ -132,89 +133,86 @@ fn agent_chat(text: int, tlen: int) {    agent_load_key();
         volatile_store8(jsrc + jl, 0);
         if (json_has_field(jsrc, "tool_calls") == 1) {
             /* 提取 tool_call 字段（必须在 "tool_calls" 之后找，避免匹配顶层 id） */
-            let name_len: int = json_find_after(jsrc, "tool_calls", "name", 0x673100);
-            let id_len: int = json_find_after(jsrc, "tool_calls", "id", 0x673200);
-            let arg_len: int = json_find_after(jsrc, "tool_calls", "arguments", 0x673300);
+            let name_len: int = json_find_after(jsrc, "tool_calls", "name", 0x673100, 256);
+            let id_len: int = json_find_after(jsrc, "tool_calls", "id", 0x673200, 256);
+            let arg_len: int = json_find_after(jsrc, "tool_calls", "arguments", 0x673300, 256);
             if (name_len > 0 && id_len > 0) {
                 /* 执行工具 */
-                serial_print("TOOL name=[");
+                console_write("TOOL name=[");
                 let tj2: int = 0;
                 while (tj2 < name_len) {
-                    serial_putc(volatile_load8(0x673100 + tj2));
+                    console_putc(volatile_load8(0x673100 + tj2));
                     tj2 = tj2 + 1;
                 }
-                serial_print("] args=[");
+                console_write("] args=[");
                 tj2 = 0;
                 while (tj2 < arg_len) {
-                    serial_putc(volatile_load8(0x673300 + tj2));
+                    console_putc(volatile_load8(0x673300 + tj2));
                     tj2 = tj2 + 1;
                 }
-                serial_print("]\n");
-                let res_len: int = agent_run_tool(0x673100, 0x673300, 0x673400);
-                serial_print("TOOL res=[");
+                console_write("]\n");
+                let res_len: int = agent_run_tool(0x673100, 0x673300, 0x673400, 3072);
+                if (res_len < 0) {
+                    console_write("DS: tool result too large\n");
+                    return;
+                }
+                console_write("TOOL res=[");
                 tj2 = 0;
                 while (tj2 < res_len) {
-                    serial_putc(volatile_load8(0x673400 + tj2));
+                    console_putc(volatile_load8(0x673400 + tj2));
                     tj2 = tj2 + 1;
                 }
-                serial_print("]\n");
+                console_write("]\n");
                 /* 组装 assistant(tool_calls) + tool(result) 追加到工具消息区 */
-                tmsg_len = agent_append(0x676000, tmsg_len, "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"");
-                let tj: int = 0;
-                while (tj < id_len) {
-                    volatile_store8(0x676000 + tmsg_len, volatile_load8(0x673200 + tj));
-                    tmsg_len = tmsg_len + 1;
-                    tj = tj + 1;
+                writer_write_str(&tool_messages, "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"");
+                writer_write_bytes(&tool_messages, 0x673200 as u64, id_len);
+                writer_write_str(&tool_messages, "\",\"type\":\"function\",\"function\":{\"name\":\"");
+                writer_write_bytes(&tool_messages, 0x673100 as u64, name_len);
+                writer_write_str(&tool_messages, "\",\"arguments\":\"");
+                writer_write_json_escaped(&tool_messages, 0x673300 as u64, arg_len);
+                writer_write_str(&tool_messages, "\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"");
+                writer_write_bytes(&tool_messages, 0x673200 as u64, id_len);
+                writer_write_str(&tool_messages, "\",\"content\":\"");
+                writer_write_json_escaped(&tool_messages, 0x673400 as u64, res_len);
+                writer_write_str(&tool_messages, "\"},");
+                if (tool_messages.failed) {
+                    console_write("DS: tool history too large\n");
+                    return;
                 }
-                tmsg_len = agent_append(0x676000, tmsg_len, "\",\"type\":\"function\",\"function\":{\"name\":\"");
-                tj = 0;
-                while (tj < name_len) {
-                    volatile_store8(0x676000 + tmsg_len, volatile_load8(0x673100 + tj));
-                    tmsg_len = tmsg_len + 1;
-                    tj = tj + 1;
-                }
-                tmsg_len = agent_append(0x676000, tmsg_len, "\",\"arguments\":\"");
-                tmsg_len = json_escape(0x673300, arg_len, 0x676000, tmsg_len);
-                tmsg_len = agent_append(0x676000, tmsg_len, "\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"");
-                tj = 0;
-                while (tj < id_len) {
-                    volatile_store8(0x676000 + tmsg_len, volatile_load8(0x673200 + tj));
-                    tmsg_len = tmsg_len + 1;
-                    tj = tj + 1;
-                }
-                tmsg_len = agent_append(0x676000, tmsg_len, "\",\"content\":\"");
-                tmsg_len = json_escape(0x673400, res_len, 0x676000, tmsg_len);
-                tmsg_len = agent_append(0x676000, tmsg_len, "\"},");
             } else {
-                serial_print("DS: (tool call parse fail)\n");
+                console_write("DS: (tool call parse fail)\n");
                 return;
             }
         } else {
             /* 无工具调用：打印 content */
-            let cl: int = json_find_str(jsrc, "content", 0x673000);
+            let cl: int = json_find_str(jsrc, "content", 0x673000, 256);
             if (cl > 0) {
-                serial_print("DS: ");
+                console_write("DS: ");
                 let cj: int = 0;
                 while (cj < cl) {
-                    serial_putc(volatile_load8(0x673000 + cj));
+                    console_putc(volatile_load8(0x673000 + cj));
                     cj = cj + 1;
                 }
-                serial_putc(10);
+                console_putc(10);
                 /* 历史持久化：user + assistant */
-                let hist_len: int = volatile_load32(0x675800);
-                hist_len = agent_append(0x675000, hist_len, "{\"role\":\"user\",\"content\":\"");
-                hist_len = json_escape(text, tlen, 0x675000, hist_len);
-                hist_len = agent_append(0x675000, hist_len, "\"},{\"role\":\"assistant\",\"content\":\"");
-                hist_len = json_escape(0x673000, cl, 0x675000, hist_len);
-                hist_len = agent_append(0x675000, hist_len, "\"},");
-                volatile_store32(0x675800, hist_len);
+                let history: BoundedWriter = writer_resume(0x675000 as u64, 2048, volatile_load32(0x675800));
+                writer_write_str(&history, "{\"role\":\"user\",\"content\":\"");
+                writer_write_json_escaped(&history, text as u64, tlen);
+                writer_write_str(&history, "\"},{\"role\":\"assistant\",\"content\":\"");
+                writer_write_json_escaped(&history, 0x673000 as u64, cl);
+                writer_write_str(&history, "\"},");
+                if (history.failed) {
+                    console_write("DS: conversation history too large\n");
+                    return;
+                }
+                volatile_store32(0x675800, history.len);
             } else {
-                serial_print("DS: (no content field)\n");
+                console_write("DS: (no content field)\n");
             }
             return;
         }
     }
-    serial_print("DS: (tool loop limit)\n");
+    console_write("DS: (tool loop limit)\n");
 }
 
 /* ---- db ask：NL → 数据操作（P15-1）---- */
@@ -225,16 +223,17 @@ static db_ask_msgname: [32]u8;   /* "messages" 表名缓冲 */
    role/content 为字符串地址（int）；str 列定长 32B，超长截断 */
 fn db_msg_log(role: int, content: int) {
     /* 确保 messages 表存在 */
-    let tid: int = db_find_table(int_to_ptr(0x407080));
-    if (tid < 0) {
-        tid = db_create_table(int_to_ptr(0x407080), 3, 0, 1, 1, 0);
-        if (tid < 0) {
+    let table: DbTableHandle = database_table(0x407080 as u64);
+    if (!database_table_is_valid(table)) {
+        table = database_create(0x407080 as u64, 3, 0, 1, 1, 0);
+        if (!database_table_is_valid(table)) {
             return;
         }
     }
     /* id = kv msgid 自增 */
     let midbuf: int = 0x407100;
-    let midlen: int = kv_get(0x407180, midbuf);
+    let counter: ServiceBytes = database_kv_read(0x407180 as u64, midbuf as u64);
+    let midlen: int = counter.len;
     let mid: int = 0;
     if (midlen > 0) {
         let mi: int = 0;
@@ -260,17 +259,17 @@ fn db_msg_log(role: int, content: int) {
         mi3 = mi3 + 1;
     }
     volatile_store8(midbuf + mi3, 0);
-    kv_put(0x407180, midbuf);
+    database_kv_write(0x407180 as u64, midbuf as u64);
     /* 插入 messages 行：id, role, content（地址即 u64 值） */
     let vals: [4]u64;
     vals[0] = mid;
     vals[1] = role;
     vals[2] = content;
-    db_insert(tid, ptr_to_int(&vals[0]));
+    database_insert(table, ptr_to_int(&vals[0]));
 }
 
 /* db ask <问题>：预置含 schema 的 system 消息 → agent_chat（工具含 sql/kv/doc）→ 会话落库 */
-fn db_ask(text: int, tlen: int) {
+fn db_ask(text: u64, tlen: int) {
     /* 固定地址常量：messages 表名 / msgid 键 / user+assistant 角色 / lastq / session doc 名 */
     let mn: str = "messages";
     let mi: int = 0;
@@ -315,23 +314,26 @@ fn db_ask(text: int, tlen: int) {
     }
     volatile_store8(0x407380 + mi, 0);
     /* 历史区重置为 system 消息（含全部表 schema） */
-    let hist_len: int = 0;
-    hist_len = agent_append(0x675000, hist_len, "{\"role\":\"system\",\"content\":\"You are the pp-db assistant of pp-os. Database schema: ");
-    let sl: int = db_schema_to_buf(0x675000 + hist_len);
-    hist_len = hist_len + sl;
-    hist_len = agent_append(0x675000, hist_len, ". Answer the question by calling the sql/kv/doc tools, then summarize the result.\"},");
-    volatile_store32(0x675800, hist_len);
+    let history: BoundedWriter = writer_new(0x675000 as u64, 2048);
+    writer_write_str(&history, "{\"role\":\"system\",\"content\":\"You are the pp-db assistant of pp-os. Database schema: ");
+    database_write_schema(&history);
+    writer_write_str(&history, ". Answer the question by calling the sql/kv/doc tools, then summarize the result.\"},");
+    if (history.failed) {
+        console_write("db ask: schema prompt too large\n");
+        return;
+    }
+    volatile_store32(0x675800, history.len);
     /* 主循环（多轮工具调用） */
     agent_chat(text, tlen);
     /* 会话落库：user 问题（0x674000 稳定副本）→ messages；kv 状态 lastq */
     db_msg_log(0x407200, 0x674000);
     db_msg_log(0x407280, 0x673000);
-    kv_put(0x407300, text);
+    database_kv_write(0x407300 as u64, text);
     /* 会话 JSON 快照 → doc（128B 截断，v1 限制注明） */
     let hl: int = volatile_load32(0x675800);
     if (hl > 127) {
         hl = 127;
     }
     volatile_store8(0x675000 + hl, 0);
-    doc_put(0x407380, 0x675000);
+    database_doc_write(0x407380 as u64, 0x675000 as u64);
 }

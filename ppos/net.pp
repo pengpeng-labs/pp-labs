@@ -1,11 +1,11 @@
 /* e1000 (Intel 82540EM) 网卡驱动：PCI 枚举 + MMIO + 收发描述符环 */
 
-static e1000_base: int = 0;   /* 启动时由 PCI 枚举填充 */
+static e1000_base: u64;   /* 启动时由 PCI BAR0/1 填充 */
 
-static tx_ring: int = 0;   /* 发送描述符环地址 */
-static rx_ring: int = 0;   /* 接收描述符环地址 */
-static tx_buf: int = 0;    /* 发送缓冲区 */
-static rx_buf: int = 0;    /* 接收缓冲区 */
+static tx_ring: u64;
+static rx_ring: u64;
+static tx_buf: u64;
+static rx_buf: u64;
 static tx_tail: int = 0;   /* 发送尾指针 */
 static rx_tail: int = 0;   /* 接收尾指针 */
 
@@ -22,6 +22,14 @@ fn mmio_read(off: int) -> int {
 
 fn mmio_write(off: int, val: int) {
     volatile_store32(e1000_base + off, val);
+}
+
+fn address_low(address: u64) -> int {
+    return (address & (0xFFFFFFFF as u64)) as int;
+}
+
+fn address_high(address: u64) -> int {
+    return (address >> 32) as int;
 }
 
 /* PCI 配置空间读 32 位 */
@@ -62,7 +70,7 @@ fn eeprom_read(addr: int) -> int {
 }
 
 /* 读 MAC 地址（6 字节，写回 mac 缓冲） */
-fn e1000_mac(mac: int) {
+fn e1000_mac(mac: u64) {
     let w0: int = eeprom_read(0);
     let w1: int = eeprom_read(1);
     let w2: int = eeprom_read(2);
@@ -75,10 +83,9 @@ fn e1000_mac(mac: int) {
 }
 
 /* 写发送描述符（标准 e1000 布局：buffer_addr 0-7，length 8-9，cmd 11，status 12） */
-fn tx_desc(idx: int, addr: int, len: int) {
-    let p: int = tx_ring + idx * 16;
-    volatile_store32(p, addr);          /* buffer addr low */
-    volatile_store32(p + 4, 0);         /* buffer addr high */
+fn tx_desc(idx: int, addr: u64, len: int) {
+    let p: u64 = tx_ring + idx * 16;
+    volatile_store64(p, addr);
     volatile_store16(p + 8, len);       /* length */
     volatile_store8(p + 10, 0);         /* CSO */
     volatile_store8(p + 11, 0x0B);      /* CMD: EOP | IFCS | RS */
@@ -88,10 +95,9 @@ fn tx_desc(idx: int, addr: int, len: int) {
 }
 
 /* 写接收描述符 */
-fn rx_desc(idx: int, addr: int) {
-    let p: int = rx_ring + idx * 16;
-    volatile_store32(p, addr);
-    volatile_store32(p + 4, 0);
+fn rx_desc(idx: int, addr: u64) {
+    let p: u64 = rx_ring + idx * 16;
+    volatile_store64(p, addr);
     volatile_store16(p + 8, 0);
     volatile_store16(p + 10, 0);
     volatile_store8(p + 12, 0);
@@ -107,7 +113,15 @@ fn e1000_init() {
         return;
     }
     let bar0: int = pci_read32(0, dev, 0, 0x10);
-    e1000_base = bar0 & 0xFFFFFFF0;
+    if ((bar0 & 1) != 0) {
+        net_ok = 0;   /* port-I/O BAR is not supported by this driver */
+        return;
+    }
+    e1000_base = (bar0 & 0xFFFFFFF0) as u64;
+    if ((bar0 & 0x6) == 0x4) {
+        let bar1: int = pci_read32(0, dev, 0, 0x14);
+        e1000_base = e1000_base | (((bar1 as u32) as u64) << 32);
+    }
 
     /* 开启 PCI Bus Master（DMA 必需，否则描述符读写无效） */
     let cmd: int = pci_read32(0, dev, 0, 4);
@@ -135,6 +149,11 @@ fn e1000_init() {
     rx_ring = kmalloc(32 * 16);
     tx_buf = kmalloc(32 * 2048);
     rx_buf = kmalloc(32 * 2048);
+    if (tx_ring == (0 as u64) || rx_ring == (0 as u64)
+        || tx_buf == (0 as u64) || rx_buf == (0 as u64)) {
+        net_ok = 0;
+        return;
+    }
 
     /* 初始化发送描述符 */
     let i: int = 0;
@@ -147,15 +166,15 @@ fn e1000_init() {
     rx_tail = 31;   /* 与 RDT 寄存器一致：下一个待收描述符 = (31+1)%32 = 0 */
 
     /* 配置发送环 */
-    mmio_write(0x3800, tx_ring);      /* TDBAL */
-    mmio_write(0x3804, 0);            /* TDBAH */
+    mmio_write(0x3800, address_low(tx_ring));
+    mmio_write(0x3804, address_high(tx_ring));
     mmio_write(0x3808, 32 * 16);      /* TDLEN */
     mmio_write(0x3810, 0);            /* TDH */
     mmio_write(0x3818, 0);            /* TDT */
 
     /* 配置接收环 */
-    mmio_write(0x2800, rx_ring);      /* RDBAL */
-    mmio_write(0x2804, 0);            /* RDBAH */
+    mmio_write(0x2800, address_low(rx_ring));
+    mmio_write(0x2804, address_high(rx_ring));
     mmio_write(0x2808, 32 * 16);      /* RDLEN */
     mmio_write(0x2810, 0);            /* RDH */
     mmio_write(0x2818, 31);           /* RDT */
@@ -170,11 +189,14 @@ fn e1000_init() {
     net_ok = 1;
 }
 
-/* 发送一帧：data=数据地址，len=长度 */
-fn e1000_send(data: int, len: int) {
+/* 发送一帧：driver-owned descriptor buffer is exactly 2048 bytes. */
+fn e1000_send(data: u64, len: int) -> int {
+    if (net_ok != 1 || data == (0 as u64) || len <= 0 || len > 2048) {
+        return -1;
+    }
     let idx: int = tx_tail;
     let i: int = 0;
-    let b: int = tx_buf + idx * 2048;
+    let b: u64 = tx_buf + idx * 2048;
     while (i < len) {
         volatile_store8(b + i, volatile_load8(data + i));
         i = i + 1;
@@ -184,50 +206,59 @@ fn e1000_send(data: int, len: int) {
     tx_tail = nt;
     mmio_write(0x3818, nt);  /* TDT */
     /* 等 DD 位（status 在偏移 12），有界 */
-    let dp: int = tx_ring + idx * 16;
+    let dp: u64 = tx_ring + idx * 16;
     let tries: int = 0;
     while ((volatile_load8(dp + 12) & 1) == 0) {
         tries = tries + 1;
         if (tries > 100000) {
-            serial_print("tx timeout, sta=");
+            console_write("tx timeout, sta=");
             print_byte_hex(volatile_load8(dp + 12));
-            serial_print(" tdh=");
+            console_write(" tdh=");
             print_int(mmio_read(0x3810));
-            serial_putc(10);
-            return;
+            console_putc(10);
+            return -1;
         }
     }
-    serial_print("tx done\n");
+    console_write("tx done\n");
+    return len;
 }
 
-/* 查询接收：返回收到帧的长度，0 表示无帧；数据写到 dst */
-fn e1000_recv(dst: int) -> int {
+/* 查询接收：oversized frames are released but never partially copied. */
+fn e1000_recv(dst: u64, capacity: int) -> int {
+    if (net_ok != 1 || capacity < 0 || (capacity > 0 && dst == (0 as u64))) {
+        return -1;
+    }
     let rdt: int = rx_tail;
     let ni: int = (rdt + 1) % 32;
-    let p: int = rx_ring + ni * 16;
+    let p: u64 = rx_ring + ni * 16;
     let st: int = volatile_load8(p + 12);
     if ((st & 1) == 0) {
         let rdh: int = mmio_read(0x2810);
         if (rdh != 0) {
-            serial_print("rx: rdh=");
+            console_write("rx: rdh=");
             print_int(rdh);
-            serial_print(" ni=");
+            console_write(" ni=");
             print_int(ni);
-            serial_print(" st=");
+            console_write(" st=");
             print_byte_hex(st);
-            serial_putc(10);
+            console_putc(10);
         }
         return 0;   /* 无新帧（DD 未置位） */
     }
     let len: int = volatile_load16(p + 8);
-    let src: int = rx_buf + ni * 2048;
-    let i: int = 0;
-    while (i < len) {
-        volatile_store8(dst + i, volatile_load8(src + i));
-        i = i + 1;
+    let src: u64 = rx_buf + ni * 2048;
+    if (len <= capacity) {
+        let i: int = 0;
+        while (i < len) {
+            volatile_store8(dst + i, volatile_load8(src + i));
+            i = i + 1;
+        }
     }
     rx_tail = ni;
     mmio_write(0x2818, ni);  /* RDT：归还描述符 */
+    if (len > capacity) {
+        return -3;
+    }
     return len;
 }
 
@@ -237,25 +268,25 @@ fn hex_char(d: int) -> int {
     }
     return 55 + d;
 }fn print_byte_hex(b: int) {
-    serial_putc(hex_char((b >> 4) & 15));
-    serial_putc(hex_char(b & 15));
+    console_putc(hex_char((b >> 4) & 15));
+    console_putc(hex_char(b & 15));
 }
 
 fn print_hex(n: int) {
     let i: int = 28;
     while (i >= 0) {
-        serial_putc(hex_char((n >> i) & 15));
+        console_putc(hex_char((n >> i) & 15));
         i = i - 4;
     }
 }
 
 fn print_int(n: int) {
     if (n == 0) {
-        serial_putc(48);
+        console_putc(48);
         return;
     }
     if (n < 0) {
-        serial_putc(45);
+        console_putc(45);
         n = 0 - n;
     }
     let buf: [12]u8;
@@ -267,7 +298,7 @@ fn print_int(n: int) {
     }
     while (i > 0) {
         i = i - 1;
-        serial_putc(buf[i]);
+        console_putc(buf[i]);
     }
 }
 
@@ -322,15 +353,6 @@ fn arp_request(target: int) {
 fn store_be16(addr: int, val: int) {
     volatile_store8(addr, (val >> 8) & 0xFF);
     volatile_store8(addr + 1, val & 0xFF);
-}
-
-/* 字符串长度 */
-fn str_len(s: str) -> int {
-    let i: int = 0;
-    while (s[i] != 0) {
-        i = i + 1;
-    }
-    return i;
 }
 
 /* 大端 32 位写/读 */
@@ -454,6 +476,11 @@ fn udp_send(dst_ip: int, dst_port: int, payload: int, payload_len: int) {
 
 fn dns_query(host: str) {
     let q: int = 0x630000;
+    let hp: u64 = ptr_to_int(host);
+    if (hp == (0 as u64)) {
+        console_write("dns invalid host\n");
+        return;
+    }
     store_be16(q, 0x1234);
     store_be16(q + 2, 0x0100);
     store_be16(q + 4, 1);
@@ -463,39 +490,57 @@ fn dns_query(host: str) {
     /* QNAME：label 编码 */
     let i: int = 0;
     let j: int = 12;
-    while (host[i] != 0) {
+    while (i < 254 && volatile_load8(hp + i) != 0) {
         let start: int = i;
-        while (host[i] != 46 && host[i] != 0) {
+        while (i < 254 && volatile_load8(hp + i) != 46
+            && volatile_load8(hp + i) != 0) {
             i = i + 1;
+        }
+        let label_len: int = i - start;
+        if (label_len <= 0 || label_len > 63 || j + label_len + 5 > 512) {
+            console_write("dns invalid host\n");
+            return;
         }
         volatile_store8(q + j, i - start);
         j = j + 1;
         let k: int = start;
         while (k < i) {
-            volatile_store8(q + j, host[k]);
+            volatile_store8(q + j, volatile_load8(hp + k));
             j = j + 1;
             k = k + 1;
         }
-        if (host[i] == 46) {
+        if (i < 254 && volatile_load8(hp + i) == 46) {
             i = i + 1;
         }
+    }
+    if (i >= 254 || volatile_load8(hp + i) != 0) {
+        console_write("dns invalid host\n");
+        return;
     }
     volatile_store8(q + j, 0);
     j = j + 1;
     store_be16(q + j, 1);
     store_be16(q + j + 2, 1);
     let qlen: int = j + 4;
-    uip_glue_dns_send(q, qlen);
-    serial_print("dns sent\n");
+    if (uip_glue_dns_send(q, qlen) == qlen) {
+        console_write("dns sent\n");
+    } else {
+        console_write("dns send rejected\n");
+    }
 }
 
 /* DNS 响应（uIP UDP 回调 → pp 解析） */
 fn pp_dns_recv(buf: u64, len: int) {
-    dns_parse(buf, len);
+    if (buf != (0 as u64) && len >= 12 && len <= 1526) {
+        dns_parse(buf, len);
+    }
 }
 
 /* 解析 DNS 响应：遍历 answers 找 A 记录（TYPE=1），打印 IP */
-fn dns_parse(d: int, len: int) {
+fn dns_parse(d: u64, len: int) {
+    if (d == (0 as u64) || len < 12) {
+        return;
+    }
     let i: int = 12;
     /* 跳过 question（QNAME + QTYPE + QCLASS） */
     while (i < len) {
@@ -527,41 +572,41 @@ fn dns_parse(d: int, len: int) {
         let atype: int = (volatile_load8(d + i) << 8) | volatile_load8(d + i + 1);
         let rdlen: int = (volatile_load8(d + i + 8) << 8) | volatile_load8(d + i + 9);
         if (atype == 1 && rdlen == 4) {
-            let ip: int = d + i + 10;
+            let ip: u64 = d + i + 10;
             dns_resolved[0] = volatile_load8(ip) & 0xFF;
             dns_resolved[1] = volatile_load8(ip + 1) & 0xFF;
             dns_resolved[2] = volatile_load8(ip + 2) & 0xFF;
             dns_resolved[3] = volatile_load8(ip + 3) & 0xFF;
-            serial_print("DNS ip: ");
+            console_write("DNS ip: ");
             print_int(dns_resolved[0]);
-            serial_putc(46);
+            console_putc(46);
             print_int(dns_resolved[1]);
-            serial_putc(46);
+            console_putc(46);
             print_int(dns_resolved[2]);
-            serial_putc(46);
+            console_putc(46);
             print_int(dns_resolved[3]);
-            serial_putc(10);
+            console_putc(10);
         }
         i = i + 10 + rdlen;
     }
-    serial_print("DNS: no A record\n");
+    console_write("DNS: no A record\n");
 }
 
 fn http_get(dst_ip: int, dst_port: int, path: str) {
     /* 简化：HTTP/1.0 请求 → 复用 http_get_host（Host 头为空串） */
     let rl: int = http_get_host(dst_ip, dst_port, int_to_ptr(0), path);
     if (rl > 0) {
-        serial_print("HTTP response (");
+        console_write("HTTP response (");
         print_int(rl);
-        serial_print(" bytes)\n");
+        console_write(" bytes)\n");
         let j: int = 0;
         while (j < rl && j < 600) {
-            serial_putc(volatile_load8(0x650000 + j));
+            console_putc(volatile_load8(0x650000 + j));
             j = j + 1;
         }
-        serial_putc(10);
+        console_putc(10);
     } else {
-        serial_print("no response\n");
+        console_write("no response\n");
     }
 }
 
@@ -569,74 +614,67 @@ fn http_get(dst_ip: int, dst_port: int, path: str) {
 fn http_get_host(dst_ip: int, dst_port: int, host: str, path: str) -> int {
     /* uIP 连接 + 发送 */
     if (uip_glue_connect(dst_ip, dst_port) != 0) {
-        serial_print("uip connect fail\n");
+        console_write("uip connect fail\n");
         return 0;
     }
     let t: int = 0;
     while (t < 3000) {
         uip_glue_poll();
+        if (uip_glue_last_error() < 0) {
+            console_write("http transport boundary error\n");
+            return 0;
+        }
         if (uip_glue_connected() == 1) {
             break;
         }
         if (uip_glue_closed() == 1) {
-            serial_print("no synack\n");
+            console_write("no synack\n");
             return 0;
         }
         hlt();
         t = t + 1;
     }
     if (uip_glue_connected() != 1) {
-        serial_print("no synack\n");
+        console_write("no synack\n");
         return 0;
     }
     /* 构建 GET <path> HTTP/1.1\r\nHost: <host>\r\nConnection: close\r\n\r\n */
-    let req: int = 0x630100;
-    let ri: int = 0;
-    let h1: str = "GET ";
-    let i: int = 0;
-    while (h1[i] != 0) {
-        volatile_store8(req + ri, h1[i]);
-        ri = ri + 1;
-        i = i + 1;
+    let request: BoundedWriter = writer_new(0x630100 as u64, 2048);
+    writer_write_str(&request, "GET ");
+    writer_write_cstr(&request, ptr_to_int(path), 1024);
+    writer_write_str(&request, " HTTP/1.1\r\nHost: ");
+    writer_write_cstr(&request, ptr_to_int(host), 512);
+    writer_write_str(&request, "\r\nConnection: close\r\n\r\n");
+    if (request.failed) {
+        console_write("http request too large\n");
+        return 0;
     }
-    let plen: int = str_len(path);
-    i = 0;
-    while (i < plen) {
-        volatile_store8(req + ri, path[i]);
-        ri = ri + 1;
-        i = i + 1;
+    if (uip_glue_send(request.data, request.len) != request.len) {
+        console_write("http send rejected\n");
+        return 0;
     }
-    let h2: str = " HTTP/1.1\r\nHost: ";
-    i = 0;
-    while (h2[i] != 0) {
-        volatile_store8(req + ri, h2[i]);
-        ri = ri + 1;
-        i = i + 1;
-    }
-    let hl: int = str_len(host);
-    i = 0;
-    while (i < hl) {
-        volatile_store8(req + ri, host[i]);
-        ri = ri + 1;
-        i = i + 1;
-    }
-    let h3: str = "\r\nConnection: close\r\n\r\n";
-    i = 0;
-    while (h3[i] != 0) {
-        volatile_store8(req + ri, h3[i]);
-        ri = ri + 1;
-        i = i + 1;
-    }
-    uip_glue_send(req, ri);
-    serial_print("http sent\n");
+    console_write("http sent\n");
     /* 收响应：从 glue 缓冲读 */
     http_len = 0;
+    let response_cap: int = 65536;
     let t2: int = 0;
     let idle: int = 0;
     while (t2 < 3000 && idle < 20) {
         let before: int = http_len;
         uip_glue_poll();
-        let n: int = uip_glue_recv(0x650000 + http_len, 2048);
+        if (uip_glue_last_error() < 0) {
+            console_write("http transport boundary error\n");
+            return 0;
+        }
+        if (http_len >= response_cap) {
+            break;
+        }
+        let remaining: int = response_cap - http_len;
+        let chunk_cap: int = remaining;
+        if (chunk_cap > 2048) {
+            chunk_cap = 2048;
+        }
+        let n: int = uip_glue_recv(0x650000 + http_len, chunk_cap);
         http_len = http_len + n;
         hlt();
         t2 = t2 + 1;
@@ -652,16 +690,26 @@ fn http_get_host(dst_ip: int, dst_port: int, host: str, path: str) -> int {
     return http_len;
 }
 
+fn http_get_view(dst_ip: int, dst_port: int, host: str, path: str) -> ServiceBytes {
+    let response: ServiceBytes = service_bytes_empty();
+    response.len = http_get_host(dst_ip, dst_port, host, path);
+    if (response.len > 0) {
+        response.data = 0x650000 as u64;
+        response.ok = true;
+    }
+    return response;
+}
+
 /* ---- uIP glue 桥接（C 侧调用） ---- */
 
 /* e1000 收帧（glue 用）：dst 为 C 侧帧缓冲（u64 地址），返回帧长 */
-fn pp_e1000_recv(dst: u64) -> int {
-    return e1000_recv(dst);
+fn pp_e1000_recv(dst: u64, capacity: int) -> int {
+    return e1000_recv(dst, capacity);
 }
 
 /* e1000 发帧（glue 用） */
-fn pp_e1000_send(buf: u64, len: int) {
-    e1000_send(buf, len);
+fn pp_e1000_send(buf: u64, len: int) -> int {
+    return e1000_send(buf, len);
 }
 /* UDP 帧暂存（glue 拦截 DNS 响应 → pp 解析） */
 static udp_frame: [600]u8;
@@ -676,51 +724,53 @@ fn pp_set_gateway_mac(mac: u64) {
     }
 }
 
-/* glue 调试打印 */
-fn pp_dbg(s: str) {
-    serial_print(s);
+/* C callback boundary: view is borrowed only for this synchronous call. */
+fn pp_dbg(s: u64, size: int) {
+    if (s != (0 as u64) && size > 0 && size <= 256) {
+        console_write_bytes(s, size);
+    }
 }
 
 fn pp_dbg_int(v: int) {
-    serial_putc(91);
+    console_putc(91);
     if (v == 1) {
-        serial_print("ARP");
+        console_write("ARP");
     } else if (v == 2) {
-        serial_print("IP");
+        console_write("IP");
     } else {
-        serial_print("??");
+        console_write("??");
     }
-    serial_putc(93);
-    serial_putc(10);
+    console_putc(93);
+    console_putc(10);
 }
 
 /* glue 调试：打印 TCP SYN 帧关键字段 */
 fn pp_dbg_frame(p: u64, len: int) {
-    serial_print("TX len=");
+    console_write("TX len=");
     print_int(len);
-    serial_print(" eth=");
+    console_write(" eth=");
     print_byte_hex(volatile_load8(p + 12));
     print_byte_hex(volatile_load8(p + 13));
     if (len > 34) {
-        serial_print(" ipdst=");
+        console_write(" ipdst=");
         print_int(volatile_load8(p + 30));
-        serial_putc(46);
+        console_putc(46);
         print_int(volatile_load8(p + 31));
-        serial_putc(46);
+        console_putc(46);
         print_int(volatile_load8(p + 32));
-        serial_putc(46);
+        console_putc(46);
         print_int(volatile_load8(p + 33));
-        serial_print(" sport=");
+        console_write(" sport=");
         print_int((volatile_load8(p + 34) << 8) | volatile_load8(p + 35));
-        serial_print(" dport=");
+        console_write(" dport=");
         print_int((volatile_load8(p + 36) << 8) | volatile_load8(p + 37));
-        serial_print(" flags=");
+        console_write(" flags=");
         print_byte_hex(volatile_load8(p + 47));
-        serial_print(" tcpcs=");
+        console_write(" tcpcs=");
         print_byte_hex(volatile_load8(p + 50));
         print_byte_hex(volatile_load8(p + 51));
     }
-    serial_putc(10);
+    console_putc(10);
 }
 
 fn pp_udp_frame(buf: u64, len: int) {
@@ -741,7 +791,7 @@ fn pp_udp_frame(buf: u64, len: int) {
 
 /* PIT tick（glue 时钟用，100Hz） */
 fn pp_ticks() -> int {
-    return tick_count_global();
+    return tick_count_global() as int;
 }
 
 /* 轮询网络（uIP 驱动 + DNS）：返回 1 有事件 */
@@ -758,17 +808,17 @@ fn net_init() {
         my_ip[2] = 2;
         my_ip[3] = 15;   /* QEMU 用户网络默认客户机 IP */
         uip_glue_init();
-        serial_print("e1000: ");
+        console_write("e1000: ");
         let i: int = 0;
         while (i < 6) {
             if (i > 0) {
-                serial_putc(58);
+                console_putc(58);
             }
             print_byte_hex(my_mac[i]);
             i = i + 1;
         }
-        serial_putc(10);
+        console_putc(10);
     } else {
-        serial_print("e1000: not found\n");
+        console_write("e1000: not found\n");
     }
 }

@@ -3,9 +3,18 @@
    agent 通过本层调用工具；将来可桥接外部 MCP 服务器（网络版）。 */
 
 /* ---- 工具注册表（MCP tools）---- */
-static mcp_tool_name: [8]int;   /* 工具名指针 */
-static mcp_tool_desc: [8]int;   /* 工具描述指针 */
+static mcp_tool_name: [8]u64;
+static mcp_tool_desc: [8]u64;
 static mcp_tool_count: int = 0;
+static mcp_method_buf: [64]u8;
+static mcp_call_name_buf: [32]u8;
+static mcp_sql_buf: [256]u8;
+static mcp_key_buf: [128]u8;
+static mcp_value_buf: [128]u8;
+static mcp_op_buf: [64]u8;
+static mcp_doc_name_buf: [128]u8;
+static mcp_doc_content_buf: [128]u8;
+static mcp_tool_result_buf: [3072]u8;
 
 /* 注册工具（初始化时调用） */
 fn mcp_register(name: str, desc: str) -> int {
@@ -19,7 +28,7 @@ fn mcp_register(name: str, desc: str) -> int {
 }
 
 /* 按名查找工具，返回 id；未找到 -1 */
-fn mcp_find(name: int) -> int {
+fn mcp_find(name: u64) -> int {
     let i: int = 0;
     while (i < mcp_tool_count) {
         if (str_eq(mcp_tool_name[i], int_to_ptr(name)) == 1) {
@@ -31,250 +40,121 @@ fn mcp_find(name: int) -> int {
 }
 
 /* 执行工具（id，req 为调用方传入的请求 JSON——工具参数从中提取），结果写入 out，返回长度 */
-fn mcp_run_tool(id: int, req: int, out: int) -> int {
+fn mcp_run_tool(id: int, req: u64, out: u64, out_cap: int) -> int {
     if (id == 0) {
-        return fs_list_str(out);   /* ls */
+        let listed: int = file_list_to_buffer(out, out_cap);
+        if (listed < 0) { return mcp_emit(out, out_cap, "tool result too large\n"); }
+        return listed;
     }
     /* sql 工具：参数 {"sql":"..."} */
     if (id == 1) {
-        let sqlbuf: int = 0x401300;
-        let sl: int = mcp_get_param_str(req, "sql", sqlbuf);
-        if (sl == 0) {
-            return mcp_emit(out, "sql: missing sql param\n");
+        let sqlbuf: u64 = ptr_to_int(&mcp_sql_buf[0]);
+        let sl: int = mcp_get_param_str(req, "sql", sqlbuf, 256);
+        if (sl <= 0) {
+            return mcp_emit(out, out_cap, "sql: missing or oversized sql param\n");
         }
-        let st: int = db_parse_sql(sqlbuf);
-        if (st < 0) {
-            return mcp_emit(out, "sql: syntax error\n");
-        }
-        if (db_stmt_is_tx()) {
-            switch db_stmt_kind {
-                DbStmtKind.Begin {
-                    if (db_tx_begin()) { return mcp_emit(out, "transaction begun\n"); }
-                    return mcp_emit(out, "transaction already active\n");
-                }
-                DbStmtKind.Commit {
-                    if (db_tx_commit()) { return mcp_emit(out, "transaction committed\n"); }
-                    return mcp_emit(out, "no active transaction\n");
-                }
-                DbStmtKind.Rollback {
-                    if (db_tx_rollback()) { return mcp_emit(out, "transaction rolled back\n"); }
-                    return mcp_emit(out, "no active transaction\n");
-                }
-                _ { return mcp_emit(out, "sql: unsupported\n"); }
-            }
-        }
-        if (db_stmt_is_create()) {
-            if (db_stmt_is_create_index()) {
-                let index_tid: int = db_find_table(int_to_ptr(db_stmt_table));
-                if (index_tid < 0) { return mcp_emit(out, "sql: no such table\n"); }
-                let index_col: int = db_col_idx(index_tid, db_stmt_cols[0]);
-                if (index_col < 0) { return mcp_emit(out, "sql: no such column\n"); }
-                if (db_index_create(db_stmt_index, index_tid, index_col) < 0) {
-                    return mcp_emit(out, "create index failed\n");
-                }
-                return mcp_emit(out, "index created\n");
-            }
-            /* CREATE：tid=-1 需建表 */
-            let r: int = db_create_table(int_to_ptr(db_stmt_table), db_stmt_coln,
-                db_stmt_types[0], db_stmt_types[1], db_stmt_types[2], db_stmt_types[3]);
-            if (r >= 0) {
-                db_set_col_names(r, db_stmt_cols[0], db_stmt_cols[1], db_stmt_cols[2], db_stmt_cols[3]);
-                return mcp_emit(out, "table created\n");
-            }
-            return mcp_emit(out, "create failed\n");
-        }
-        if (db_stmt_is_drop()) {
-            /* DROP */
-            let tid5: int = db_find_table(int_to_ptr(db_stmt_table));
-            if (tid5 >= 0) {
-                db_drop_table(tid5);
-                return mcp_emit(out, "table dropped\n");
-            }
-            return mcp_emit(out, "sql: no such table\n");
-        }
-        let tid: int = db_find_table(int_to_ptr(db_stmt_table));
-        if (tid < 0) {
-            return mcp_emit(out, "sql: no such table\n");
-        }
-        switch db_stmt_kind {
-            DbStmtKind.Select { return db_select_to_buf(tid, out, 3072); }
-            DbStmtKind.Insert {
-                db_exec_insert(tid);
-                return mcp_emit(out, "1 row inserted\n");
-            }
-            DbStmtKind.Update {
-                db_exec_update(tid);
-                return mcp_emit(out, "updated\n");
-            }
-            DbStmtKind.Delete {
-                db_exec_delete(tid);
-                return mcp_emit(out, "deleted\n");
-            }
-            _ { return mcp_emit(out, "sql: unsupported\n"); }
-        }
+        return database_execute_to_buffer(sqlbuf, out, out_cap);
     }
     /* kv 工具：参数 {"op":"get|put|del","key":"...","value":"..."} */
     if (id == 2) {
-        let kbuf: int = 0x401300;
-        let vbuf: int = 0x401380;
-        let opbuf: int = 0x401400;
-        mcp_get_param_str(req, "op", opbuf);
-        let kl: int = mcp_get_param_str(req, "key", kbuf);
-        if (kl == 0) {
-            return mcp_emit(out, "kv: missing key\n");
+        let kbuf: u64 = ptr_to_int(&mcp_key_buf[0]);
+        let vbuf: u64 = ptr_to_int(&mcp_value_buf[0]);
+        let opbuf: u64 = ptr_to_int(&mcp_op_buf[0]);
+        mcp_get_param_str(req, "op", opbuf, 64);
+        let kl: int = mcp_get_param_str(req, "key", kbuf, 128);
+        if (kl <= 0) {
+            return mcp_emit(out, out_cap, "kv: missing or oversized key\n");
         }
         if (str_eq(opbuf, "get") == 1) {
-            let rl: int = kv_get(kbuf, out);
-            if (rl < 0) {
-                return mcp_emit(out, "kv: not found\n");
+            let value: ServiceBytes = database_kv_read(kbuf, out);
+            if (!value.ok) {
+                return mcp_emit(out, out_cap, "kv: not found\n");
             }
-            volatile_store8(out + rl, 0);
-            return rl;
+            if (value.len >= out_cap) { return mcp_emit(out, out_cap, "kv: result too large\n"); }
+            volatile_store8(out + value.len, 0);
+            return value.len;
         }
         if (str_eq(opbuf, "put") == 1) {
-            mcp_get_param_str(req, "value", vbuf);
-            if (kv_put(kbuf, vbuf) == 1) {
-                return mcp_emit(out, "kv put ok\n");
+            if (mcp_get_param_str(req, "value", vbuf, 128) < 0) {
+                return mcp_emit(out, out_cap, "kv: value too large\n");
             }
-            return mcp_emit(out, "kv full\n");
+            if (database_kv_write(kbuf, vbuf)) {
+                return mcp_emit(out, out_cap, "kv put ok\n");
+            }
+            return mcp_emit(out, out_cap, "kv full\n");
         }
         if (str_eq(opbuf, "del") == 1) {
-            if (kv_del(kbuf) == 1) {
-                return mcp_emit(out, "kv del ok\n");
+            if (database_kv_remove(kbuf)) {
+                return mcp_emit(out, out_cap, "kv del ok\n");
             }
-            return mcp_emit(out, "kv: not found\n");
+            return mcp_emit(out, out_cap, "kv: not found\n");
         }
-        return mcp_emit(out, "kv: unknown op\n");
+        return mcp_emit(out, out_cap, "kv: unknown op\n");
     }
     /* doc 工具：参数 {"op":"get|put","name":"...","content":"..."} */
     if (id == 3) {
-        let nbuf: int = 0x401300;
-        let cbuf: int = 0x401380;
-        let opbuf2: int = 0x401400;
-        mcp_get_param_str(req, "op", opbuf2);
-        let nl: int = mcp_get_param_str(req, "name", nbuf);
-        if (nl == 0) {
-            return mcp_emit(out, "doc: missing name\n");
+        let nbuf: u64 = ptr_to_int(&mcp_doc_name_buf[0]);
+        let cbuf: u64 = ptr_to_int(&mcp_doc_content_buf[0]);
+        let opbuf2: u64 = ptr_to_int(&mcp_op_buf[0]);
+        mcp_get_param_str(req, "op", opbuf2, 64);
+        let nl: int = mcp_get_param_str(req, "name", nbuf, 128);
+        if (nl <= 0) {
+            return mcp_emit(out, out_cap, "doc: missing or oversized name\n");
         }
         if (str_eq(opbuf2, "get") == 1) {
-            let rl: int = doc_get(nbuf, out);
-            if (rl < 0) {
-                return mcp_emit(out, "doc: not found\n");
+            let document: ServiceBytes = database_doc_read(nbuf, out);
+            if (!document.ok) {
+                return mcp_emit(out, out_cap, "doc: not found\n");
             }
-            volatile_store8(out + rl, 0);
-            return rl;
+            if (document.len >= out_cap) { return mcp_emit(out, out_cap, "doc: result too large\n"); }
+            volatile_store8(out + document.len, 0);
+            return document.len;
         }
         if (str_eq(opbuf2, "put") == 1) {
-            mcp_get_param_str(req, "content", cbuf);
-            if (doc_put(nbuf, cbuf) == 1) {
-                return mcp_emit(out, "doc put ok\n");
+            if (mcp_get_param_str(req, "content", cbuf, 128) < 0) {
+                return mcp_emit(out, out_cap, "doc: content too large\n");
             }
-            return mcp_emit(out, "doc full\n");
+            if (database_doc_write(nbuf, cbuf)) {
+                return mcp_emit(out, out_cap, "doc put ok\n");
+            }
+            return mcp_emit(out, out_cap, "doc full\n");
         }
-        return mcp_emit(out, "doc: unknown op\n");
+        return mcp_emit(out, out_cap, "doc: unknown op\n");
     }
-    let msg: str = "unknown tool";
-    let i: int = 0;
-    while (msg[i] != 0) {
-        volatile_store8(out + i, msg[i]);
-        i = i + 1;
-    }
-    volatile_store8(out + i, 0);
-    return i;
+    return mcp_emit(out, out_cap, "unknown tool");
 }
 
 /* ---- JSON-RPC 2.0 响应构建（写入 dst，返回长度）---- */
 
 /* 成功响应：{"jsonrpc":"2.0","id":N,"result":R}
    result 为字符串时：{"result":"..."}；数字时：{"result":N} */
-fn mcp_ok_string(dst: int, id: int, result: int) -> int {
-    let o: int = 0;
-    let h: str = "{\"jsonrpc\":\"2.0\",\"id\":";
-    let i: int = 0;
-    while (h[i] != 0) {
-        volatile_store8(dst + o, h[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    o = o + itoa_buf(id, dst + o);
-    let m: str = ",\"result\":\"";
-    i = 0;
-    while (m[i] != 0) {
-        volatile_store8(dst + o, m[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    /* result 字符串转义拷贝 */
-    let j: int = 0;
-    while (volatile_load8(result + j) != 0) {
-        let c: int = volatile_load8(result + j);
-        if (c == 34) {
-            volatile_store8(dst + o, 92);
-            o = o + 1;
-            volatile_store8(dst + o, 34);
-            o = o + 1;
-        } else {
-            volatile_store8(dst + o, c);
-            o = o + 1;
-        }
-        j = j + 1;
-    }
-    let t: str = "\"}\n";
-    i = 0;
-    while (t[i] != 0) {
-        volatile_store8(dst + o, t[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    volatile_store8(dst + o, 0);
-    return o;
+fn mcp_ok_string(dst: u64, dst_cap: int, id: int, result: u64) -> int {
+    let writer: BoundedWriter = writer_new(dst, dst_cap);
+    writer_write_str(&writer, "{\"jsonrpc\":\"2.0\",\"id\":");
+    writer_write_int(&writer, id);
+    writer_write_str(&writer, ",\"result\":\"");
+    writer_write_json_cstr(&writer, result, dst_cap);
+    writer_write_str(&writer, "\"}\n");
+    if (!writer_terminate(&writer)) { return -1; }
+    return writer.len;
 }
 
 /* 错误响应：{"jsonrpc":"2.0","id":N,"error":{"code":C,"message":"M"}} */
-fn mcp_error(dst: int, id: int, code: int, msg: str) -> int {
-    let o: int = 0;
-    let h: str = "{\"jsonrpc\":\"2.0\",\"id\":";
-    let i: int = 0;
-    while (h[i] != 0) {
-        volatile_store8(dst + o, h[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    o = o + itoa_buf(id, dst + o);
-    let m: str = ",\"error\":{\"code\":";
-    i = 0;
-    while (m[i] != 0) {
-        volatile_store8(dst + o, m[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    o = o + itoa_buf(code, dst + o);
-    let m2: str = ",\"message\":\"";
-    i = 0;
-    while (m2[i] != 0) {
-        volatile_store8(dst + o, m2[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    i = 0;
-    while (msg[i] != 0) {
-        volatile_store8(dst + o, msg[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    let t: str = "\"}}\n";
-    i = 0;
-    while (t[i] != 0) {
-        volatile_store8(dst + o, t[i]);
-        o = o + 1;
-        i = i + 1;
-    }
-    volatile_store8(dst + o, 0);
-    return o;
+fn mcp_error(dst: u64, dst_cap: int, id: int, code: int, msg: str) -> int {
+    let writer: BoundedWriter = writer_new(dst, dst_cap);
+    writer_write_str(&writer, "{\"jsonrpc\":\"2.0\",\"id\":");
+    writer_write_int(&writer, id);
+    writer_write_str(&writer, ",\"error\":{\"code\":");
+    writer_write_int(&writer, code);
+    writer_write_str(&writer, ",\"message\":\"");
+    writer_write_json_escaped(&writer, ptr_to_int(msg), len(msg) as int);
+    writer_write_str(&writer, "\"}}\n");
+    if (!writer_terminate(&writer)) { return -1; }
+    return writer.len;
 }
 
 /* 从 JSON 请求提取 "id" 值（数字），返回 0 表示未找到 */
-fn mcp_get_id(src: int) -> int {
+fn mcp_get_id(src: u64) -> int {
     let idv: int = 0;
     let i: int = 0;
     while (volatile_load8(src + i) != 0) {
@@ -300,7 +180,8 @@ fn mcp_get_id(src: int) -> int {
 }
 
 /* 从 JSON 请求提取 "method" 字符串值到 out，返回长度 */
-fn mcp_get_method(src: int, out: int) -> int {
+fn mcp_get_method(src: u64, out: u64, out_cap: int) -> int {
+    if (out_cap <= 0) { return -1; }
     let i: int = 0;
     while (volatile_load8(src + i) != 0) {
         if (volatile_load8(src + i) == 34) {   /* '"' */
@@ -322,10 +203,14 @@ fn mcp_get_method(src: int, out: int) -> int {
                 if (volatile_load8(src + j) == 34) {   /* '"' */
                     j = j + 1;
                     let o: int = 0;
-                    while (volatile_load8(src + j) != 34 && o < 64) {
+                    while (volatile_load8(src + j) != 34 && o < out_cap - 1) {
                         volatile_store8(out + o, volatile_load8(src + j));
                         o = o + 1;
                         j = j + 1;
+                    }
+                    if (volatile_load8(src + j) != 34) {
+                        volatile_store8(out + o, 0);
+                        return -1;
                     }
                     volatile_store8(out + o, 0);
                     return o;
@@ -339,7 +224,8 @@ fn mcp_get_method(src: int, out: int) -> int {
 }
 
 /* 从 JSON 请求提取 "name" 参数值（params.name）到 out，返回长度 */
-fn mcp_get_param_name(src: int, out: int) -> int {
+fn mcp_get_param_name(src: u64, out: u64, out_cap: int) -> int {
+    if (out_cap <= 0) { return -1; }
     let i: int = 0;
     while (volatile_load8(src + i) != 0) {
         if (volatile_load8(src + i) == 34) {   /* '"' */
@@ -359,10 +245,14 @@ fn mcp_get_param_name(src: int, out: int) -> int {
                 if (volatile_load8(src + j) == 34) {   /* '"' */
                     j = j + 1;
                     let o: int = 0;
-                    while (volatile_load8(src + j) != 34 && o < 32) {
+                    while (volatile_load8(src + j) != 34 && o < out_cap - 1) {
                         volatile_store8(out + o, volatile_load8(src + j));
                         o = o + 1;
                         j = j + 1;
+                    }
+                    if (volatile_load8(src + j) != 34) {
+                        volatile_store8(out + o, 0);
+                        return -1;
                     }
                     volatile_store8(out + o, 0);
                     return o;
@@ -376,7 +266,8 @@ fn mcp_get_param_name(src: int, out: int) -> int {
 }
 
 /* 从 JSON 请求提取任意 "key":"value" 字符串到 out，返回长度（工具参数用；处理 \" \\ 转义） */
-fn mcp_get_param_str(src: int, key: str, out: int) -> int {
+fn mcp_get_param_str(src: u64, key: str, out: u64, out_cap: int) -> int {
+    if (out_cap <= 0) { return -1; }
     let i: int = 0;
     while (volatile_load8(src + i) != 0) {
         if (volatile_load8(src + i) == 34) {   /* '"' */
@@ -396,7 +287,11 @@ fn mcp_get_param_str(src: int, key: str, out: int) -> int {
                     if (volatile_load8(src + j) == 34) {   /* '"' */
                         j = j + 1;
                         let o: int = 0;
-                        while (volatile_load8(src + j) != 34 && o < 200) {
+                        while (volatile_load8(src + j) != 34) {
+                            if (o >= out_cap - 1) {
+                                volatile_store8(out + out_cap - 1, 0);
+                                return -1;
+                            }
                             if (volatile_load8(src + j) == 92) {   /* '\' 转义 */
                                 j = j + 1;
                                 if (volatile_load8(src + j) == 34 || volatile_load8(src + j) == 92) {
@@ -426,166 +321,80 @@ fn mcp_get_param_str(src: int, key: str, out: int) -> int {
 }
 
 /* 把结果文本拷到 out（带换行），返回长度 */
-fn mcp_emit(out: int, s: str) -> int {
-    let i: int = 0;
-    while (s[i] != 0) {
-        volatile_store8(out + i, s[i]);
-        i = i + 1;
-    }
-    return i;
+fn mcp_emit(out: u64, out_cap: int, s: str) -> int {
+    let writer: BoundedWriter = writer_new(out, out_cap);
+    writer_write_str(&writer, s);
+    if (!writer_terminate(&writer)) { return -1; }
+    return writer.len;
 }
 
 /* 处理一个 JSON-RPC 请求：req 指向请求 JSON，resp 指向响应缓冲，返回响应长度 */
-fn mcp_handle(req: int, resp: int) -> int {
+fn mcp_handle(req: u64, resp: u64, resp_cap: int) -> int {
     let id: int = mcp_get_id(req);
-    let meth: int = 0x401000;
-    let mlen: int = mcp_get_method(req, meth);
-    if (mlen == 0) {
-        return mcp_error(resp, id, -32600, "invalid request");
+    let method: u64 = ptr_to_int(&mcp_method_buf[0]);
+    let method_len: int = mcp_get_method(req, method, 64);
+    if (method_len <= 0) {
+        return mcp_error(resp, resp_cap, id, -32600, "invalid request");
     }
-    /* initialize */
-    if (str_eq(meth, "initialize") == 1) {
-        let s: str = "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"pp-os\",\"version\":\"0.7\"}}";
-        return mcp_ok_string(resp, id, ptr_to_int(s));
+    if (str_eq(method, "initialize") == 1) {
+        let info: str = "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"pp-os\",\"version\":\"0.7\"}}";
+        return mcp_ok_string(resp, resp_cap, id, ptr_to_int(info));
     }
-    /* tools/list */
-    if (str_eq(meth, "tools/list") == 1) {
-        let o: int = 0;
-        let h: str = "{\"jsonrpc\":\"2.0\",\"id\":";
-        let i: int = 0;
-        while (h[i] != 0) {
-            volatile_store8(resp + o, h[i]);
-            o = o + 1;
-            i = i + 1;
+    if (str_eq(method, "tools/list") == 1) {
+        let writer: BoundedWriter = writer_new(resp, resp_cap);
+        writer_write_str(&writer, "{\"jsonrpc\":\"2.0\",\"id\":");
+        writer_write_int(&writer, id);
+        writer_write_str(&writer, ",\"result\":{\"tools\":[");
+        let tool: int = 0;
+        while (tool < mcp_tool_count && !writer.failed) {
+            if (tool > 0) { writer_write_byte(&writer, 44); }
+            writer_write_str(&writer, "{\"name\":\"");
+            writer_write_json_cstr(&writer, mcp_tool_name[tool], 64);
+            writer_write_str(&writer, "\",\"description\":\"");
+            writer_write_json_cstr(&writer, mcp_tool_desc[tool], 512);
+            writer_write_str(&writer, "\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
+            tool = tool + 1;
         }
-        o = o + itoa_buf(id, resp + o);
-        let m: str = ",\"result\":{\"tools\":[";
-        i = 0;
-        while (m[i] != 0) {
-            volatile_store8(resp + o, m[i]);
-            o = o + 1;
-            i = i + 1;
+        writer_write_str(&writer, "]}}");
+        if (!writer_terminate(&writer)) {
+            return mcp_error(resp, resp_cap, id, -32000, "response too large");
         }
-        let ti: int = 0;
-        while (ti < mcp_tool_count) {
-            if (ti > 0) {
-                volatile_store8(resp + o, 44);   /* ',' */
-                o = o + 1;
-            }
-            let t: str = "{\"name\":\"";
-            i = 0;
-            while (t[i] != 0) {
-                volatile_store8(resp + o, t[i]);
-                o = o + 1;
-                i = i + 1;
-            }
-            let j: int = 0;
-            while (volatile_load8(mcp_tool_name[ti] + j) != 0) {
-                volatile_store8(resp + o, volatile_load8(mcp_tool_name[ti] + j));
-                o = o + 1;
-                j = j + 1;
-            }
-            let t2: str = "\",\"description\":\"";
-            i = 0;
-            while (t2[i] != 0) {
-                volatile_store8(resp + o, t2[i]);
-                o = o + 1;
-                i = i + 1;
-            }
-            j = 0;
-            while (volatile_load8(mcp_tool_desc[ti] + j) != 0) {
-                volatile_store8(resp + o, volatile_load8(mcp_tool_desc[ti] + j));
-                o = o + 1;
-                j = j + 1;
-            }
-            let t3: str = "\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}";
-            i = 0;
-            while (t3[i] != 0) {
-                volatile_store8(resp + o, t3[i]);
-                o = o + 1;
-                i = i + 1;
-            }
-            ti = ti + 1;
-        }
-        let t4: str = "]}}";
-        i = 0;
-        while (t4[i] != 0) {
-            volatile_store8(resp + o, t4[i]);
-            o = o + 1;
-            i = i + 1;
-        }
-        volatile_store8(resp + o, 0);
-        return o;
+        return writer.len;
     }
-    /* tools/call */
-    if (str_eq(meth, "tools/call") == 1) {
-        let name: int = 0x401100;
-        let nl: int = mcp_get_param_name(req, name);
-        if (nl == 0) {
-            return mcp_error(resp, id, -32602, "invalid params");
+    if (str_eq(method, "tools/call") == 1) {
+        let name: u64 = ptr_to_int(&mcp_call_name_buf[0]);
+        let name_len: int = mcp_get_param_name(req, name, 32);
+        if (name_len <= 0) {
+            return mcp_error(resp, resp_cap, id, -32602, "invalid params");
         }
-        let tid: int = mcp_find(name);
-        if (tid < 0) {
-            return mcp_error(resp, id, -32602, "unknown tool");
+        let tool_id: int = mcp_find(name);
+        if (tool_id < 0) {
+            return mcp_error(resp, resp_cap, id, -32602, "unknown tool");
         }
-        let result: int = 0x401200;
-        let rl: int = mcp_run_tool(tid, req, result);
-        /* 包装成 MCP 结果：{"result":{"content":[{"type":"text","text":"..."}]}} */
-        let o: int = 0;
-        let h: str = "{\"jsonrpc\":\"2.0\",\"id\":";
-        let i: int = 0;
-        while (h[i] != 0) {
-            volatile_store8(resp + o, h[i]);
-            o = o + 1;
-            i = i + 1;
+        let result: u64 = ptr_to_int(&mcp_tool_result_buf[0]);
+        let result_len: int = mcp_run_tool(tool_id, req, result, 3072);
+        if (result_len < 0) {
+            return mcp_error(resp, resp_cap, id, -32000, "tool result too large");
         }
-        o = o + itoa_buf(id, resp + o);
-        let m: str = ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"";
-        i = 0;
-        while (m[i] != 0) {
-            volatile_store8(resp + o, m[i]);
-            o = o + 1;
-            i = i + 1;
+        let writer: BoundedWriter = writer_new(resp, resp_cap);
+        writer_write_str(&writer, "{\"jsonrpc\":\"2.0\",\"id\":");
+        writer_write_int(&writer, id);
+        writer_write_str(&writer, ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"");
+        writer_write_json_escaped(&writer, result, result_len);
+        writer_write_str(&writer, "\"}]}}");
+        if (!writer_terminate(&writer)) {
+            return mcp_error(resp, resp_cap, id, -32000, "response too large");
         }
-        let j: int = 0;
-        while (j < rl) {
-            let c: int = volatile_load8(result + j);
-            if (c == 34) {
-                volatile_store8(resp + o, 92);
-                o = o + 1;
-                volatile_store8(resp + o, 34);
-                o = o + 1;
-            } else {
-                volatile_store8(resp + o, c);
-                o = o + 1;
-            }
-            j = j + 1;
-        }
-        let t: str = "\"}]}}";
-        i = 0;
-        while (t[i] != 0) {
-            volatile_store8(resp + o, t[i]);
-            o = o + 1;
-            i = i + 1;
-        }
-        volatile_store8(resp + o, 0);
-        return o;
+        return writer.len;
     }
-    return mcp_error(resp, id, -32601, "method not found");
+    return mcp_error(resp, resp_cap, id, -32601, "method not found");
 }
 
-/* MCP 调用工具（供 agent 使用）：name 指向工具名，args 为参数 JSON（如 {"sql":"..."}，可 0），result 缓冲 */
-fn mcp_call(name: int, args: int, result: int) -> int {
-    let tid: int = mcp_find(name);
-    if (tid < 0) {
-        let msg: str = "unknown tool";
-        let i: int = 0;
-        while (msg[i] != 0) {
-            volatile_store8(result + i, msg[i]);
-            i = i + 1;
-        }
-        volatile_store8(result + i, 0);
-        return i;
+/* Bounded in-process tool call used by the Agent and shell. */
+fn mcp_call(name: u64, args: u64, result: u64, result_cap: int) -> int {
+    let tool_id: int = mcp_find(name);
+    if (tool_id < 0) {
+        return mcp_emit(result, result_cap, "unknown tool");
     }
-    return mcp_run_tool(tid, args, result);
+    return mcp_run_tool(tool_id, args, result, result_cap);
 }
