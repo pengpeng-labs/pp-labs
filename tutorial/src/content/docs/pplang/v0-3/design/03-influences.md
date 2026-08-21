@@ -1,35 +1,59 @@
 ---
-title: 借鉴了哪些语言
-description: pp 如何按问题借思想，而不是拼接语法。
+title: 知识来源与语言借鉴
+description: 教材提供理论坐标，成熟语言提供工程对照。
 sidebar:
   order: 3
 ---
 
-pp 的设计不是语言特性拼盘。每项借鉴都有明确问题，也有明确停止线。
+pplang 有两类来源，不能混为一谈：教材解释一般原理，成熟语言展示不同目标下的工程选择。
 
-| 来源 | 借入 pp | 没有借入 |
+## 教材提供什么
+
+| 来源 | 进入 pplang 的知识点 | 在工程中的落点 |
 |---|---|---|
-| C | 指针、ABI、手动内存、裸机能力 | 隐式真值、NUL 字符串模型、宽松转换 |
-| Rust | 表达式可读性、enum 的使用体验 | borrow checker、trait、生命周期语法 |
-| Zig | 显式系统能力、freestanding 取向、切片思想 | comptime、完整指针类型矩阵 |
-| Go/Python | `for x in s`、`range(n)`、切片的直观写法 | GC、动态类型和大型运行时 |
-| OCaml/TAPL | tagged union、payload 解构、穷尽检查 | 高阶类型系统和复杂模式语言 |
-| Ada | 泛型显式实例化、依赖能力显式声明 | 重型泛型包与约束语法 |
-| Lua | 少 feature、多 mechanism | 动态 table、metatable 和反射运行时 |
-| LLVM Kaleidoscope | 小步理解编译器前端的方法 | 只停留在表达式玩具语言 |
+| TAPL | 类型判断、作用域、积类型、和类型 | struct、enum、switch、精确类型匹配 |
+| PLAI | 通过实现理解语义、逐步扩展语言 | 小型 AST、清楚的降级路径、按需求增加机制 |
+| CSAPP | 数据表示、内存、链接、异常控制流 | 整数位宽、指针、ABI、目标文件、系统边界 |
+| Computer Organization and Design | 字节序、对齐、内存映射 IO、目标机器 | volatile、端口 IO、freestanding builtin |
+| Dragon Book | 前端到 IR 的编译流水线 | 由 pplc 教程展开，pplang 只观察结果 |
 
-## C：保留能力，收紧默认语义
+TAPL 和 PLAI 并不要求 pplang 采用某种语法；CSAPP 也不会替我们决定字符串类型。它们提供分析问题的词汇与模型，具体边界仍然是 pplang 的设计选择。
 
-pp 与 C 一样允许程序直接接触地址、外部函数和硬件。但 `if (1)` 在 pp 中是错误，整数宽度和符号语义受类型约束，字符串携带长度。pp 不是“换语法的 C”，而是保留 C 能力后重新选择默认规则。
+## 成熟语言提供什么
 
-## OCaml 与 TAPL：Sum Type 的命根子是穷尽性
+| 语言 | 借入 pplang | 有意不借入 |
+|---|---|---|
+| C | 指针、ABI、手动内存、裸机能力 | 隐式真值、NUL 字符串作为核心模型、宽松转换 |
+| Rust | enum 的表达体验、模式穷尽、切片的信息绑定 | borrow checker、trait、生命周期语法 |
+| Zig | 显式系统能力、freestanding、切片与责任文档 | comptime、完整指针矩阵、编译期鸭子类型 |
+| Go | `[N]T`、直接控制流、方法与指针接收者体验 | GC、interface 与 goroutine 运行时 |
+| Python | 教程可读性、`for x in` 与切片直觉 | 动态类型、对象模型和解释器运行时 |
+| Ada | 显式泛型实例与所需操作显式声明 | 泛型包体系和更重的约束语法 |
+| OCaml | tagged union 与模式匹配 | 高阶模块和复杂模式语言 |
 
-只实现 `{tag,payload}` 布局并不够。真正消除手写 tag 风险的是：构造器决定 payload 类型，switch 必须覆盖全部变体。pp 砍掉嵌套模式、守卫和多 payload 语法，却保留这条核心保证。
+## 三个关键比较
 
-## Ada：显式泛型，而非隐式能力
+### Rust：保留 Sum Type，不复制所有权系统
 
-Ada 泛型会显式声明算法所需操作。pp 将这个思想降到已有机制：类型复用由 `fn f[T]` 提供，操作约束由普通函数指针参数提供。这样不需要 trait solver，也没有隐藏的候选查找。
+Rust 展示了 enum 与 match 如何把互斥状态写得自然。pplang 保留构造、payload 解构和穷尽性，因为这三者共同消除手写 tag 风险；它没有引入 borrow checker，因此 `str` 和指针的生命周期仍由 API 契约负责。
 
-## Zig：显式不是语法越多
+### Zig：保留切片责任，不复制 comptime
 
-pp 接受 Zig 的系统设计取向，却没有复制它的全部指针和编译期元编程体系。pp 的显式意味着关键资源与能力在程序文本里可见，不意味着为每种情况创造一种新类型。
+Zig 的语言参考会把切片表示、边界检查、所有权与生命周期责任放在一起说明。pplang 采用相同的工程诚实：`str` 是 fat pointer，但不是拥有型字符串。泛型则选择更窄的显式单态化，而不是把类型变成通用编译期值。
+
+### Go：保留直接体验，不引入隐式接口
+
+Go 的教程善于从变量、函数、控制流逐步走到方法和泛型。pplang 借鉴 `[N]T`、方法糖和指针接收者自动取址，但泛型能力通过函数指针显式传入，不由 interface 隐式满足。
+
+## 教程写法也有来源
+
+本教程吸收了成熟官方教程的组织经验：
+
+- Rust Book 的“概念章 + 项目章”。
+- A Tour of Go 的短反馈循环和随章练习。
+- Python Tutorial 对“教程”与“语言参考”的职责分离。
+- Zig Language Reference 对内存表示和生命周期责任的同时说明。
+
+我们不会复制它们的章节或措辞，而是把这种教学结构用于 pplang 的真实实现。
+
+八本教材、相关章节和四个项目之间的详细对应关系见[八本书与 pplang](06-reading-map/)。
